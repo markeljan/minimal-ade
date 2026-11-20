@@ -24,7 +24,7 @@ import type { GenUiActionHandler } from '@/components/genui/registry';
 import type { InlineAiEditRequest } from '@/components/workbench/files-editor-pane';
 import type { PromotedGenUiSpec } from '@/components/workbench/genui-canvas-pane';
 import { WorkbenchPane } from '@/components/workbench/workbench-pane';
-import { DEFAULT_MODEL_ID, MODEL_CATALOG } from '@/lib/ai/models';
+import { DEFAULT_MODEL_ID, MODEL_CATALOG, REALTIME_MODEL_ID } from '@/lib/ai/models';
 import type { ProviderDiagnostics } from '@/lib/ai/provider';
 import {
   readStoredAstryxPalette,
@@ -165,12 +165,14 @@ export function AdeShell({
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(
     initialArtifacts[0]?.id ?? null,
   );
+  const [activeWorkspaceFilePath, setActiveWorkspaceFilePath] = useState<string | null>(null);
+  const [fileSelectionNonce, setFileSelectionNonce] = useState<number>(0);
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileEntry[]>(initialWorkspaceFiles);
   const [workspaceFileMap, setWorkspaceFileMap] =
     useState<Record<string, string>>(initialWorkspaceFileMap);
   const [previewHtmlSrcDoc, setPreviewHtmlSrcDoc] = useState<string | null>(() => {
     const htmlArt = initialArtifacts.find((a) => a.kind === 'html');
-    return htmlArt?.content ?? null;
+    return htmlArt?.content ?? initialWorkspaceFileMap['index.html'] ?? null;
   });
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [browserMode, setBrowserMode] = useState<BrowserStreamMode>('preview');
@@ -195,7 +197,17 @@ export function AdeShell({
   );
   const [activeGenUiSpecId, setActiveGenUiSpecId] = useState<string | null>(null);
   const [traceSpans, setTraceSpans] = useState<TraceSpan[]>([]);
+  const [traceClearedAt, setTraceClearedAt] = useState<number>(0);
+  const [clearedTraceSpanIds, setClearedTraceSpanIds] = useState<Set<string>>(() => new Set());
   const [usage, setUsage] = useState<TokenUsageSummary | null>(null);
+
+  const visibleTraceSpans = useMemo(() => {
+    if (traceClearedAt === 0 && clearedTraceSpanIds.size === 0) return traceSpans;
+    return traceSpans.filter(
+      (s) =>
+        !clearedTraceSpanIds.has(s.id) && (s.status === 'running' || s.startedAt >= traceClearedAt),
+    );
+  }, [traceSpans, traceClearedAt, clearedTraceSpanIds]);
 
   // External prompts dispatched from Workbench/Voice/GenUI into ChatPane
   const [externalPromptQueue, setExternalPromptQueue] = useState<{
@@ -354,7 +366,18 @@ export function AdeShell({
         setBrowserRefreshKey((k) => k + 1);
       } else if (tab === 'files' && target) {
         const match = artifacts.find((a) => a.id === target);
-        if (match) setActiveArtifactId(match.id);
+        if (match) {
+          setActiveArtifactId(match.id);
+        } else {
+          const cleanPath = target
+            .trim()
+            .replace(/^\/+/, '')
+            .replace(/^workspace\//, '');
+          if (cleanPath) {
+            setActiveWorkspaceFilePath(cleanPath);
+            setFileSelectionNonce((n) => n + 1);
+          }
+        }
       }
     },
     [artifacts],
@@ -400,7 +423,8 @@ export function AdeShell({
       if (data.fileMap && typeof data.fileMap === 'object') {
         setWorkspaceFileMap(data.fileMap);
         if (typeof data.fileMap['index.html'] === 'string') {
-          setPreviewHtmlSrcDoc((prev) => prev ?? data.fileMap?.['index.html'] ?? null);
+          setPreviewHtmlSrcDoc(data.fileMap['index.html']);
+          setBrowserRefreshKey((k) => k + 1);
         }
       }
       if (data.status?.previewUrl) {
@@ -448,20 +472,74 @@ export function AdeShell({
     }
   }, []);
 
-  const handlePromoteGenUiSpec = useCallback((spec: Spec, title?: string) => {
-    const id = generateId('genui', 8);
-    const entry: PromotedGenUiSpec = {
-      id,
-      title: title || 'Generative UI Widget',
-      spec,
-      createdAt: new Date().toISOString(),
-    };
-    setGenUiSpecs((prev) => [entry, ...prev]);
-    setActiveGenUiSpecId(id);
-    setWorkbenchOpen(true);
-    setActiveTab('genui');
-    toast.success('Promoted widget to GenUI Canvas');
-  }, []);
+  const persistPromotedArtifact = useCallback(
+    async (artifact: ArtifactRecord) => {
+      try {
+        const res = await fetch('/api/artifacts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: artifact.id,
+            chatId,
+            title: artifact.title,
+            kind: artifact.kind,
+            language: artifact.language ?? null,
+            content: artifact.content,
+            ...(artifact.spec !== undefined ? { spec: artifact.spec } : {}),
+          }),
+        });
+        if (!res.ok) return;
+        const data = (await res.json().catch(() => ({}))) as { artifact?: ArtifactRecord };
+        if (data.artifact) {
+          const saved = data.artifact;
+          setArtifacts((prev) => {
+            const idx = prev.findIndex((a) => a.id === saved.id);
+            if (idx === -1) return [saved, ...prev];
+            const copy = [...prev];
+            copy[idx] = saved;
+            return copy;
+          });
+        }
+      } catch {
+        // Keep optimistic client artifact gracefully
+      }
+    },
+    [chatId],
+  );
+
+  const handlePromoteGenUiSpec = useCallback(
+    (spec: Spec, title?: string) => {
+      const id = generateId('genui', 8);
+      const nowIso = new Date().toISOString();
+      const label = title || 'Generative UI Widget';
+      const entry: PromotedGenUiSpec = {
+        id,
+        title: label,
+        spec,
+        createdAt: nowIso,
+      };
+      setGenUiSpecs((prev) => [entry, ...prev]);
+      setActiveGenUiSpecId(id);
+      setWorkbenchOpen(true);
+      setActiveTab('genui');
+      toast.success('Promoted widget to GenUI Canvas');
+
+      const record: ArtifactRecord = {
+        id,
+        chatId,
+        title: label,
+        kind: 'genui',
+        content: JSON.stringify(spec, null, 2),
+        language: 'json',
+        version: 1,
+        spec: spec as unknown as Record<string, unknown>,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      void persistPromotedArtifact(record);
+    },
+    [chatId, persistPromotedArtifact],
+  );
 
   const handleGenUiAction: GenUiActionHandler = useCallback(
     (actionName, params) => {
@@ -473,6 +551,7 @@ export function AdeShell({
           typeof params.target === 'string' ? params.target : undefined,
         );
       } else if (actionName === 'promote_artifact' && params) {
+        const nowIso = new Date().toISOString();
         const art: ArtifactRecord = {
           id: generateId('art', 10),
           chatId,
@@ -481,10 +560,11 @@ export function AdeShell({
           content: String(params.content ?? ''),
           language: typeof params.language === 'string' ? params.language : undefined,
           version: 1,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: nowIso,
+          updatedAt: nowIso,
         };
         handleArtifactDetected(art, true);
+        void persistPromotedArtifact(art);
       } else if (actionName === 'run_command' && typeof params?.command === 'string') {
         setWorkbenchOpen(true);
         setActiveTab('terminal');
@@ -505,7 +585,13 @@ export function AdeShell({
         );
       }
     },
-    [chatId, dispatchPromptToChat, handleArtifactDetected, handleOpenWorkbench],
+    [
+      chatId,
+      dispatchPromptToChat,
+      handleArtifactDetected,
+      handleOpenWorkbench,
+      persistPromotedArtifact,
+    ],
   );
 
   const handleAskAiEdit = useCallback(
@@ -891,6 +977,9 @@ export function AdeShell({
                 onChangeSandboxTier={setSandboxTier}
                 workspaceFileMap={workspaceFileMap}
                 queuedTerminalCommand={queuedTerminalCommand}
+                onQueuedCommandConsumed={(id) =>
+                  setQueuedTerminalCommand((cur) => (cur?.id === id ? null : cur))
+                }
                 artifacts={artifacts}
                 activeArtifactId={activeArtifactId}
                 onSelectArtifact={setActiveArtifactId}
@@ -898,13 +987,18 @@ export function AdeShell({
                   setArtifacts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
                   if (updated.kind === 'html') {
                     setPreviewHtmlSrcDoc(updated.content);
+                    setBrowserRefreshKey((k) => k + 1);
                   }
                 }}
                 workspaceFiles={workspaceFiles}
+                selectedFilePath={activeWorkspaceFilePath}
+                fileSelectionNonce={fileSelectionNonce}
+                onSelectFilePath={setActiveWorkspaceFilePath}
                 onWorkspaceFilesChange={setWorkspaceFiles}
                 onAskAiEdit={handleAskAiEdit}
                 onOpenHtmlInPreview={(htmlContent) => {
                   setPreviewHtmlSrcDoc(htmlContent);
+                  setBrowserRefreshKey((k) => k + 1);
                   setActiveTab('preview');
                 }}
                 resolvedTheme={resolvedTheme}
@@ -913,13 +1007,20 @@ export function AdeShell({
                 onSelectGenUiSpec={setActiveGenUiSpecId}
                 onRemoveGenUiSpec={(id) => setGenUiSpecs((prev) => prev.filter((s) => s.id !== id))}
                 onGenUiAction={handleGenUiAction}
-                traceSpans={traceSpans}
+                traceSpans={visibleTraceSpans}
                 usage={usage}
                 modelId={modelId}
                 harnessMode={harnessMode}
                 billingInfo={billingInfo}
                 isStreaming={isStreaming}
-                onClearTraces={() => setTraceSpans([])}
+                onClearTraces={() => {
+                  setTraceClearedAt(Date.now());
+                  setClearedTraceSpanIds((prev) => {
+                    const next = new Set(prev);
+                    for (const span of traceSpans) next.add(span.id);
+                    return next;
+                  });
+                }}
               />
             )}
           </ResizablePanel>
@@ -983,7 +1084,7 @@ export function AdeShell({
         open={voiceModalOpen}
         onClose={() => setVoiceModalOpen(false)}
         onSendTranscript={dispatchPromptToChat}
-        modelId={modelId}
+        modelId={REALTIME_MODEL_ID}
         providerSettings={providerSettings}
       />
     </div>

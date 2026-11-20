@@ -404,14 +404,29 @@ export function BrowserPane({
 
   const effectiveHtml = htmlSrcDoc ?? htmlPreview;
   const effectiveIframeUrl = useMemo(() => {
-    if (currentUrl.startsWith('http://') || currentUrl.startsWith('https://')) {
-      return currentUrl;
-    }
-    if (previewUrl && !effectiveHtml) {
+    // Keep Preview isolated to the Sandbox dev-server (`:3000`) or local preview origins;
+    // do not allow external websites visited in Browser/Snapshot mode to hijack Preview.
+    const isPreviewOrigin = (candidate: string): boolean => {
+      try {
+        const parsed = new URL(candidate);
+        return (
+          parsed.hostname === 'localhost' ||
+          parsed.hostname === '127.0.0.1' ||
+          parsed.hostname.endsWith('.vercel.run')
+        );
+      } catch {
+        return false;
+      }
+    };
+
+    if (previewUrl && !htmlSrcDoc) {
       return previewUrl;
     }
+    if (isPreviewOrigin(currentUrl)) {
+      return currentUrl;
+    }
     return null;
-  }, [currentUrl, effectiveHtml, previewUrl]);
+  }, [currentUrl, htmlSrcDoc, previewUrl]);
 
   const isExternalHttpUrl = currentUrl.startsWith('http://') || currentUrl.startsWith('https://');
 

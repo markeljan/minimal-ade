@@ -11,6 +11,17 @@ import { schema } from '@/lib/db/schema';
 
 const DEV_FALLBACK_SECRET = 'minimal-ade-local-dev-secret-replace-in-production-32chars';
 
+function resolveAuthSecret(): string {
+  const configured = process.env.BETTER_AUTH_SECRET?.trim() || process.env.AUTH_SECRET?.trim();
+  if (configured) {
+    return configured;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('BETTER_AUTH_SECRET (or AUTH_SECRET) must be configured in production.');
+  }
+  return DEV_FALLBACK_SECRET;
+}
+
 /** Returns true when native Sign in with Vercel OAuth credentials are configured. */
 export function isVercelOAuthConfigured(): boolean {
   return Boolean(process.env.VERCEL_CLIENT_ID?.trim() && process.env.VERCEL_CLIENT_SECRET?.trim());
@@ -110,10 +121,7 @@ function createAuthInstance() {
   return betterAuth({
     appName: 'Minimal ADE',
     baseURL: resolveBaseURL(),
-    secret:
-      process.env.BETTER_AUTH_SECRET?.trim() ||
-      process.env.AUTH_SECRET?.trim() ||
-      DEV_FALLBACK_SECRET,
+    secret: resolveAuthSecret(),
     trustedOrigins: resolveTrustedOrigins(),
     database,
     emailAndPassword: {

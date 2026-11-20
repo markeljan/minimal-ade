@@ -63,11 +63,11 @@ After your first deploy, run `bun run db:push` (or connect locally via `vercel e
 | **`libfx` / `fx0` Durable Coding Harness** | `libfx@0.0.17`, `@vercel/config@0.15.0` | Selectable `fx` harness mode (`lib/harnesses/fx.ts`) with per-turn 5-tier credential-injecting `FxFetch`, 64-step budget guard, explicit `idempotent` coding tools, and Fluid Compute `queue/v2beta` wake handler at `/api/libfx` (topic `__libfx_wkf_workflow_session` configured in `vercel.ts`). |
 | **Workflow 5 `WorkflowAgent` Harness** | `workflow@5.7.0`, `@ai-sdk/workflow@2.0.109`, `@opentelemetry/api@1.10.0` | Selectable `workflow` harness mode (`lib/workflows/agent-workflow.ts`) using `"use workflow"` + `"use step"` directives, `withWorkflow` in `next.config.ts`, and reconnectable streams at `/api/workflow` & `/api/workflow/[runId]`. |
 | **Web Terminal & Dual-Tier Sandbox** | `@wterm/react@0.6.0`, `@wterm/just-bash@0.6.0`, `just-bash@3.6.1`, `bash-tool@1.3.19`, `@vercel/sandbox@4.0.0`, `codemirror@6.0.2` | Instant browser WASM shell (`@wterm/just-bash` + `webmcp={{ name: 'shell' }}`) paired with `just-bash` `InMemoryFs` + `bash-tool` — seamlessly upgrading to persistent `@vercel/sandbox` Ubuntu microVMs exposing ports `3000`, `4848`, and `8080`, plus CodeMirror 6 file & versioned artifact editing. |
-| **Live Browser & Desktop Streaming** | `screen-relay@0.1.2`, `@agent-browser/sandbox@0.43.0`, `remote-agent-browser@1.3.0` | Unified 4-mode `<BrowserPane />`: **Mode A** `<iframe>` App Preview, **Mode B** 60fps `screen-relay` `NSL1` WebCodecs H.264 stream with server-minted scoped grants (`/api/sandbox/relay-grant`) & single-owner **Take Control / Hand Back**, **Mode C** `agent-browser` WS JPEG pair-browsing (`@eN` refs), and **Mode D** universal SSRF-guarded HTTP snapshot (`agent-desktop` pre-baked in optional Sandbox snapshot). |
+| **Live Browser & Desktop Streaming** | `screen-relay@0.1.2`, `@agent-browser/sandbox@0.43.0`, `remote-agent-browser@1.3.0` | Unified 4-mode `<BrowserPane />`: **Mode A** `<iframe>` App Preview, **Mode B** 60fps `screen-relay` `NSL1` WebCodecs H.264 stream with server-minted short-lived `/tickets` + `ticket.<TOKEN>` WebSocket handshake (`/api/sandbox/relay-grant`, `/stream` vs `/stream?view=1`) & single-owner **Take Control / Hand Back**, **Mode C** `agent-browser` WS JPEG pair-browsing (`@eN` refs), and **Mode D** universal DNS/SSRF-guarded HTTP snapshot (`agent-desktop` pre-baked in optional Sandbox snapshot). |
 | **Voice (STT / TTS / Realtime) & Multimodal** | `ai@7.0.177`, `@ai-sdk/react@4.0.181`, `@vercel/blob@2.9.0` | 3-tier voice stack — STT (`/api/voice/transcribe`), TTS (`/api/voice/speak`), and Live Realtime Voice (`/api/realtime/token` + `experimental_useRealtime` with Web Speech API fallback) — plus image generation (`google/gemini-3.1-flash-image` / `openai/gpt-image-2`) and Vercel Blob uploads (base64 fallback locally). |
 | **GitHub Engineering Tools** | `@github-tools/sdk@1.24.0` | Optional GitHub tool pack (`repo-explorer` preset) activated dynamically when a user supplies a personal GitHub token in Settings — explore repositories, inspect issues/PRs, and review diffs directly from chat. |
-| **Remote MCP Server (`/api/mcp`)** | `mcp-handler@2.4.0`, `@modelcontextprotocol/server@2.4.0` | Stateless Streamable HTTP MCP server exposing `workspace_list_files`, `workspace_read_file`, `workspace_write_file`, `workspace_bash`, and `browser_open_and_snapshot` so external agents (Claude Code, Cursor, `fx`) can drive ADE workspaces. |
-| **Database, Auth & Observability** | `drizzle-orm@0.45.4`, `@neondatabase/serverless@1.2.1`, `better-auth@1.7.26`, `@vercel/connect@2.9.5`, `@vercel/functions@3.11.3` | Neon Postgres via Drizzle with automatic local JSON fallback (`.minimal-ade-data/store.json`), anonymous guest sessions with seamless ownership transfer on sign-in, native Sign in with Vercel OAuth, optional Vercel Connect, and low-cardinality `@vercel/functions` metrics. |
+| **Remote MCP Server (`/api/mcp`)** | `mcp-handler@2.4.0`, `@modelcontextprotocol/server@2.4.0` | Stateless Streamable HTTP MCP server (optionally secured by `ADE_MCP_TOKEN` Bearer auth) exposing `workspace_list_files`, `workspace_read_file`, `workspace_write_file`, `workspace_bash`, and `browser_open_and_snapshot` so external agents (Claude Code, Cursor, `fx`) can drive ADE workspaces. |
+| **Database, Auth & Observability** | `drizzle-orm@0.45.4`, `@neondatabase/serverless@1.2.1`, `better-auth@1.7.26`, `@vercel/connect@2.9.5`, `@vercel/functions@3.11.3` | Neon Postgres via Drizzle with automatic local JSON fallback (`.minimal-ade-data/store.json`), **Sign in with Vercel OAuth + Instant Guest Sessions + BYOK** (with automatic ownership transfer on sign-in), optional Vercel Connect, and low-cardinality `@vercel/functions` metrics. |
 
 ---
 
@@ -96,14 +96,14 @@ flowchart TD
 | **2a** | **User BYOK Key** | Key entered in **Settings → Providers** (`vck_*` → `createGateway`, `sk-*` → `createOpenAI`). Stored locally in browser preferences and sent only per-request over HTTPS. | `Your API Key` |
 | **2b** | **Sign in with Vercel OAuth (`vca_*`)** | Signed-in user's Vercel OAuth access token (1h TTL, auto-refreshed via 30d `refresh_token`). Verified via `GET https://ai-gateway.vercel.sh/v1/credits` (60s SHA-256-hashed cache). Automatically falls back to Tier 3+ if credits are `0` or on HTTP `401`/`402`/`403`. | `Your Vercel Credits` |
 | **3** | **Host Sponsor `OPENAI_API_KEY` (First)** | Prioritized ahead of `AI_GATEWAY_API_KEY`. Strips `openai/` prefixes for direct OpenAI API routing; routes non-OpenAI models to AI Gateway if Tier 4/5 credentials exist, or gracefully maps to a matching OpenAI tier (`gpt-6.2-sol`, `gpt-6-luna`, `gpt-5.3-codex`). | `Demo Sponsored (OpenAI)` |
-| **4** | **Host Sponsor `AI_GATEWAY_API_KEY`** | Direct Vercel AI Gateway access across all 13 curated frontier models (Anthropic Claude 5.5, OpenAI GPT-6.2/5.3 Codex, Google Gemini 4/3.8, SpaceXAI Grok 4.7/4.20). | `Demo Sponsored (Gateway)` |
+| **4** | **Host Sponsor `AI_GATEWAY_API_KEY`** | Direct Vercel AI Gateway access across all 13 curated frontier models (Anthropic Claude 5.5, OpenAI GPT-6.2/5.3 Codex, Google Gemini 4 Carbon/Argon & 3.8 Flash, SpaceXAI Grok 4.7/4.20). | `Demo Sponsored (Gateway)` |
 | **5** | **Vercel Project OIDC (`VERCEL_OIDC_TOKEN`)** | Automatic zero-config default on Vercel deployments — bills the deployer's own Vercel AI Gateway credits without managing static keys. | `Vercel Project OIDC` |
 
 ---
 
 ## Sign in with Vercel & Vercel Connect Setup Guide
 
-Minimal ADE runs out of the box with anonymous guest sessions (plus optional email/password sign-in). Follow these steps to enable **Sign in with Vercel** so signed-in users can automatically bill usage to their own Vercel AI Gateway credits (Tier 2b):
+Minimal ADE authenticates users via **Sign in with Vercel OAuth + Instant Guest Sessions + BYOK** (zero friction on first visit via HMAC-signed anonymous guest sessions, with optional BYOK keys in Settings). Follow these steps to enable **Sign in with Vercel** so signed-in users can automatically bill usage to their own Vercel AI Gateway credits (Tier 2b):
 
 ### 1. Create a Vercel OAuth App
 1. Open your Vercel Team Dashboard:
@@ -224,6 +224,7 @@ See [`.env.example`](./.env.example) for the complete annotated template.
 | `VERCEL_CONNECT_VERCEL_UID` | Optional | Vercel Connect OAuth connector UID for `@vercel/connect/betterauth`. |
 | `VERCEL_SANDBOX_SNAPSHOT_ID` | Optional | Pre-baked `@vercel/sandbox` snapshot ID from `bun run sandbox:snapshot`. |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Optional | Enables `resumable-stream` across reconnects (`/api/chat/[id]/stream` returns `204` cleanly when unset). |
+| `ADE_MCP_TOKEN` | Optional | Bearer token securing `/api/mcp` (`Authorization: Bearer <token>`) for remote MCP clients and private workspace access. |
 
 ---
 
@@ -236,7 +237,7 @@ minimal-ade/
 │   │   ├── chat/                 # AI SDK 7 streaming (/api/chat), resumable stream, fx harness (/api/chat/fx)
 │   │   ├── libfx/                # Private Fluid Compute queue/v2beta wakeHandler (__libfx_wkf_workflow_session)
 │   │   ├── workflow/             # Workflow 5 WorkflowAgent start & run reconnection (/api/workflow/[runId])
-│   │   ├── sandbox/              # Dual-tier sandbox status, exec, files CRUD, scoped relay-grant, browser actions
+│   │   ├── sandbox/              # Dual-tier sandbox status, exec, files CRUD, /tickets relay-grant, browser actions
 │   │   ├── voice/ & realtime/    # STT (/api/voice/transcribe), TTS (/api/voice/speak), Realtime token minting
 │   │   ├── mcp/                  # Stateless Streamable HTTP Remote MCP Server
 │   │   ├── provider/status/      # Safe zero-secret 5-tier provider diagnostics & credit status
@@ -269,11 +270,16 @@ Any MCP-compatible client (Claude Code, Cursor, `fx`, etc.) can connect to your 
 {
   "mcpServers": {
     "minimal-ade": {
-      "url": "http://localhost:3000/api/mcp"
+      "url": "http://localhost:3000/api/mcp",
+      "headers": {
+        "Authorization": "Bearer <ADE_MCP_TOKEN>"
+      }
     }
   }
 }
 ```
+
+> Set `ADE_MCP_TOKEN` in `.env.local` (or Vercel Project Env Vars) to require Bearer authentication for remote MCP clients and private chat workspaces; omit `headers` during unauthenticated local testing against the `"default"` workspace.
 
 Exposed tools: `workspace_list_files`, `workspace_read_file`, `workspace_write_file`, `workspace_bash` (Sentinel-guarded), and `browser_open_and_snapshot`.
 

@@ -5,10 +5,12 @@ import {
   GatewayError,
   GatewayForbiddenError,
 } from '@ai-sdk/gateway';
+import { getVercelOidcToken } from '@vercel/functions/oidc';
 import { APICallError } from 'ai';
 
 const VERCEL_GATEWAY_CREDITS_URL = 'https://ai-gateway.vercel.sh/v1/credits';
 const VERCEL_OAUTH_TOKEN_URL = 'https://api.vercel.com/login/oauth/token';
+const VERCEL_CONNECT_TOKEN_URL = 'https://connect.vercel.com/oauth/token';
 
 const CREDITS_CACHE_TTL_MS = 60_000;
 const CREDITS_CACHE_MAX_ENTRIES = 500;
@@ -180,28 +182,50 @@ export async function checkVercelGatewayCredits(
   }
 }
 
-/**
- * Refresh a signed-in user's Vercel OAuth access token via
- * `POST https://api.vercel.com/login/oauth/token` when `VERCEL_CLIENT_ID`
- * and `VERCEL_CLIENT_SECRET` are configured.
- */
-export async function refreshVercelOAuthToken(
-  refreshToken: string,
+async function parseOAuthRefreshResponse(
+  response: Response,
+  fallbackRefreshToken: string,
 ): Promise<RefreshedVercelOAuthToken | null> {
-  const clientId = process.env.VERCEL_CLIENT_ID?.trim();
-  const clientSecret = process.env.VERCEL_CLIENT_SECRET?.trim();
-  const trimmedRefreshToken = refreshToken.trim();
-
-  if (!clientId || !clientSecret || !trimmedRefreshToken) {
+  if (!response.ok) {
     return null;
   }
 
+  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  const accessToken = typeof payload?.access_token === 'string' ? payload.access_token.trim() : '';
+  if (!accessToken) {
+    return null;
+  }
+
+  const nextRefreshToken =
+    typeof payload?.refresh_token === 'string' && payload.refresh_token.trim().length > 0
+      ? payload.refresh_token.trim()
+      : fallbackRefreshToken;
+
+  const expiresInSeconds = parseFiniteNumber(payload?.expires_in);
+  const expiresAt =
+    expiresInSeconds !== undefined ? Date.now() + expiresInSeconds * 1_000 : undefined;
+
+  const scope = typeof payload?.scope === 'string' ? payload.scope : undefined;
+
+  return {
+    accessToken,
+    refreshToken: nextRefreshToken,
+    expiresAt,
+    scope,
+  };
+}
+
+async function refreshViaNativeVercelOAuth(
+  refreshToken: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<RefreshedVercelOAuthToken | null> {
   try {
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: clientId,
       client_secret: clientSecret,
-      refresh_token: trimmedRefreshToken,
+      refresh_token: refreshToken,
     });
 
     const response = await fetch(VERCEL_OAUTH_TOKEN_URL, {
@@ -215,37 +239,83 @@ export async function refreshVercelOAuthToken(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
-    if (!response.ok) {
-      return null;
-    }
-
-    const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-    const accessToken =
-      typeof payload?.access_token === 'string' ? payload.access_token.trim() : '';
-    if (!accessToken) {
-      return null;
-    }
-
-    const nextRefreshToken =
-      typeof payload?.refresh_token === 'string' && payload.refresh_token.trim().length > 0
-        ? payload.refresh_token.trim()
-        : trimmedRefreshToken;
-
-    const expiresInSeconds = parseFiniteNumber(payload?.expires_in);
-    const expiresAt =
-      expiresInSeconds !== undefined ? Date.now() + expiresInSeconds * 1_000 : undefined;
-
-    const scope = typeof payload?.scope === 'string' ? payload.scope : undefined;
-
-    return {
-      accessToken,
-      refreshToken: nextRefreshToken,
-      expiresAt,
-      scope,
-    };
+    return parseOAuthRefreshResponse(response, refreshToken);
   } catch {
     return null;
   }
+}
+
+async function refreshViaVercelConnect(
+  refreshToken: string,
+  connectorUid: string,
+): Promise<RefreshedVercelOAuthToken | null> {
+  const vercelOidcToken =
+    process.env.VERCEL_OIDC_TOKEN?.trim() || (await getVercelOidcToken().catch(() => undefined));
+  if (!vercelOidcToken) {
+    return null;
+  }
+
+  try {
+    const credentials = `${encodeURIComponent(connectorUid)}:${encodeURIComponent(vercelOidcToken)}`;
+    const basicAuth = Buffer.from(credentials, 'utf8').toString('base64');
+
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    });
+
+    const response = await fetch(VERCEL_CONNECT_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+        Authorization: `Basic ${basicAuth}`,
+      },
+      body: body.toString(),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+
+    return parseOAuthRefreshResponse(response, refreshToken);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Refresh a signed-in user's Vercel OAuth access token.
+ * - Uses native Sign in with Vercel (`POST https://api.vercel.com/login/oauth/token`)
+ *   when `VERCEL_CLIENT_ID` and `VERCEL_CLIENT_SECRET` are configured.
+ * - Uses Vercel Connect (`POST https://connect.vercel.com/oauth/token` with Basic
+ *   `connector:vercelOidcToken`) when `providerId === 'vercel-connect'` or when native
+ *   client credentials are absent and `VERCEL_CONNECT_VERCEL_UID` + OIDC token exist.
+ */
+export async function refreshVercelOAuthToken(
+  refreshToken: string,
+  options?: { providerId?: string },
+): Promise<RefreshedVercelOAuthToken | null> {
+  const trimmedRefreshToken = refreshToken.trim();
+  if (!trimmedRefreshToken) {
+    return null;
+  }
+
+  const clientId = process.env.VERCEL_CLIENT_ID?.trim();
+  const clientSecret = process.env.VERCEL_CLIENT_SECRET?.trim();
+  const connectorUid = process.env.VERCEL_CONNECT_VERCEL_UID?.trim();
+
+  if (options?.providerId === 'vercel-connect') {
+    return connectorUid ? refreshViaVercelConnect(trimmedRefreshToken, connectorUid) : null;
+  }
+
+  if (clientId && clientSecret) {
+    return refreshViaNativeVercelOAuth(trimmedRefreshToken, clientId, clientSecret);
+  }
+
+  if (connectorUid) {
+    return refreshViaVercelConnect(trimmedRefreshToken, connectorUid);
+  }
+
+  return null;
 }
 
 const BILLING_ERROR_PATTERNS = [

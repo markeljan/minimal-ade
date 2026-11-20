@@ -10,6 +10,7 @@ import {
   type UIMessageChunk,
   validateUIMessages,
 } from 'ai';
+import type { FxSessionImageBlock, FxSessionPromptInput, FxTextBlock } from 'libfx/node';
 import { after, NextResponse } from 'next/server';
 import { invalidateVercelGatewayCreditsCache, isUserTokenBillingError } from '@/lib/ai/credits';
 import { estimateTokenCostUsd } from '@/lib/ai/models';
@@ -24,11 +25,15 @@ import { buildFxSystemPrompt } from '@/lib/ai/system-prompt';
 import { getServerSession, updateVercelTokens } from '@/lib/auth/session';
 import { ensureChat, getChatById, saveMessages, updateChat } from '@/lib/db/queries';
 import { createFxFallbackAiTools, runFxTurn } from '@/lib/harnesses/fx';
+import { safeExternalFetch } from '@/lib/sandbox/browser-service';
 import { getActiveTier, listFiles } from '@/lib/sandbox/manager';
 import type { ChatRequestBody, MessageMetadata, SandboxTier } from '@/lib/types';
 import { generateId, truncateText } from '@/lib/utils';
 
 export const maxDuration = 300;
+
+const SUPPORTED_FX_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const MAX_IMAGE_FETCH_BYTES = 8 * 1024 * 1024; // 8 MB cap per attached image
 
 interface ExtendedFxRequestBody extends ChatRequestBody {
   sandboxTier?: SandboxTier;
@@ -50,16 +55,136 @@ function mergeProviderOverride(body: ExtendedFxRequestBody): ProviderOverrideInp
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
-function extractUserPromptText(messages: UIMessage<MessageMetadata>[]): string {
+async function readResponseBytesBounded(
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array | null> {
+  if (!response.body) {
+    const ab = await response.arrayBuffer();
+    return ab.byteLength <= maxBytes ? new Uint8Array(ab) : null;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
+
+async function resolveFxImageBlock(
+  url: string,
+  mediaType: string,
+): Promise<FxSessionImageBlock | null> {
+  const normalizedMime = mediaType.toLowerCase().split(';')[0].trim();
+  if (!SUPPORTED_FX_IMAGE_MIMES.has(normalizedMime)) {
+    return null;
+  }
+
+  const dataUriMatch = /^data:([^;]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(url.trim());
+  if (dataUriMatch) {
+    const b64 = dataUriMatch[2].replace(/\s+/g, '');
+    if (b64.length > 0 && b64.length <= Math.ceil((MAX_IMAGE_FETCH_BYTES * 4) / 3)) {
+      return {
+        type: 'image',
+        data: b64,
+        mimeType: normalizedMime,
+      };
+    }
+    return null;
+  }
+
+  if (url.startsWith('https://') || url.startsWith('http://')) {
+    try {
+      const { response } = await safeExternalFetch(url, {
+        method: 'GET',
+        maxRedirects: 3,
+        timeoutMs: 8_000,
+      });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      const bytes = await readResponseBytesBounded(response, MAX_IMAGE_FETCH_BYTES);
+      if (!bytes || bytes.byteLength === 0) {
+        return null;
+      }
+      return {
+        type: 'image',
+        data: Buffer.from(bytes).toString('base64'),
+        mimeType: normalizedMime,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extracts text AND multimodal image file attachments from the latest user message
+ * into native `libfx` `FxSessionPromptInput` blocks.
+ */
+async function extractUserPromptInput(messages: UIMessage<MessageMetadata>[]): Promise<{
+  promptInput: FxSessionPromptInput | null;
+  plainText: string;
+}> {
   const lastUser = [...messages].reverse().find((msg) => msg.role === 'user');
   if (!lastUser) {
-    return '';
+    return { promptInput: null, plainText: '' };
   }
-  return lastUser.parts
-    .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
-    .map((part) => part.text)
-    .join('\n')
-    .trim();
+
+  const blocks: Array<FxTextBlock | FxSessionImageBlock> = [];
+  const textSegments: string[] = [];
+
+  for (const part of lastUser.parts) {
+    if (part.type === 'text' && part.text.trim()) {
+      textSegments.push(part.text);
+      blocks.push({ type: 'text', text: part.text });
+    } else if (part.type === 'file' && typeof part.url === 'string' && part.mediaType) {
+      const imageBlock = await resolveFxImageBlock(part.url, part.mediaType);
+      if (imageBlock) {
+        blocks.push(imageBlock);
+      }
+    }
+  }
+
+  const plainText = textSegments.join('\n').trim();
+  if (blocks.length === 0) {
+    return { promptInput: null, plainText: '' };
+  }
+
+  const hasImages = blocks.some((block) => block.type === 'image');
+  if (!hasImages) {
+    return { promptInput: plainText, plainText };
+  }
+
+  return {
+    promptInput: blocks,
+    plainText: plainText || 'Attached image',
+  };
 }
 
 function parseJsonOrString(raw?: string): unknown {
@@ -102,6 +227,7 @@ export async function POST(request: Request): Promise<Response> {
           accessToken: session.vercelAuth.accessToken,
           refreshToken: session.vercelAuth.refreshToken,
           expiresAt: session.vercelAuth.expiresAt,
+          providerId: session.vercelAuth.providerId,
           onRefreshed: async (tokens) => {
             await updateVercelTokens(session.userId, {
               accessToken: tokens.accessToken,
@@ -134,10 +260,10 @@ export async function POST(request: Request): Promise<Response> {
       messages: body.messages,
     });
 
-    const promptText = extractUserPromptText(validatedMessages);
-    if (!promptText) {
+    const { promptInput, plainText: promptText } = await extractUserPromptInput(validatedMessages);
+    if (!promptInput) {
       return NextResponse.json(
-        { error: 'Cannot run fx harness without a user prompt.' },
+        { error: 'Cannot run fx harness without a user prompt or image attachment.' },
         { status: 400 },
       );
     }
@@ -150,8 +276,10 @@ export async function POST(request: Request): Promise<Response> {
     const latestUserMessage = [...validatedMessages].reverse().find((msg) => msg.role === 'user');
 
     let finalAssistantMessage: UIMessage<MessageMetadata> | null = null;
+    const recordedNativeParts: Array<Record<string, unknown>> = [];
     let activeBillingSource = creds.billingSource;
     let activeModelId = creds.modelId;
+    let activeBillingLabel = creds.billingInfo.label;
     let fxTransportLabel = 'libfx-durable';
 
     const uiStream = createUIMessageStream<UIMessage<MessageMetadata>>({
@@ -163,17 +291,32 @@ export async function POST(request: Request): Promise<Response> {
         let stepCounter = 0;
         let textPartId = 'fx-text-0';
         let reasoningPartId = 'fx-reasoning-0';
+        let currentTextBuf = '';
+        let currentReasoningBuf = '';
+        const recordedToolIndexById = new Map<string, number>();
 
-        const closeOpenText = () => {
+        const flushTextPart = () => {
           if (textPartOpen) {
             writer.write({ type: 'text-end', id: textPartId });
+            if (currentTextBuf) {
+              recordedNativeParts.push({ type: 'text', text: currentTextBuf, state: 'done' });
+            }
+            currentTextBuf = '';
             textPartOpen = false;
           }
         };
 
-        const closeOpenReasoning = () => {
+        const flushReasoningPart = () => {
           if (reasoningPartOpen) {
             writer.write({ type: 'reasoning-end', id: reasoningPartId });
+            if (currentReasoningBuf) {
+              recordedNativeParts.push({
+                type: 'reasoning',
+                text: currentReasoningBuf,
+                state: 'done',
+              });
+            }
+            currentReasoningBuf = '';
             reasoningPartOpen = false;
           }
         };
@@ -199,7 +342,7 @@ export async function POST(request: Request): Promise<Response> {
           const outcome = await runFxTurn({
             chatId,
             userId: session.userId,
-            prompt: promptText,
+            prompt: promptInput,
             credentials: activeCreds,
             sandboxTier: effectiveSandboxTier,
             workspaceFiles,
@@ -209,13 +352,15 @@ export async function POST(request: Request): Promise<Response> {
               ensureFramingStarted();
 
               if (event.type === 'reasoning_delta') {
-                closeOpenText();
+                flushTextPart();
                 if (!reasoningPartOpen) {
                   stepCounter += 1;
                   reasoningPartId = `fx-reasoning-${stepCounter}`;
+                  currentReasoningBuf = '';
                   writer.write({ type: 'reasoning-start', id: reasoningPartId });
                   reasoningPartOpen = true;
                 }
+                currentReasoningBuf += event.delta;
                 writer.write({
                   type: 'reasoning-delta',
                   id: reasoningPartId,
@@ -225,13 +370,15 @@ export async function POST(request: Request): Promise<Response> {
               }
 
               if (event.type === 'text_delta') {
-                closeOpenReasoning();
+                flushReasoningPart();
                 if (!textPartOpen) {
                   stepCounter += 1;
                   textPartId = `fx-text-${stepCounter}`;
+                  currentTextBuf = '';
                   writer.write({ type: 'text-start', id: textPartId });
                   textPartOpen = true;
                 }
+                currentTextBuf += event.delta;
                 writer.write({
                   type: 'text-delta',
                   id: textPartId,
@@ -241,35 +388,63 @@ export async function POST(request: Request): Promise<Response> {
               }
 
               if (event.type === 'tool_start') {
-                closeOpenReasoning();
-                closeOpenText();
+                flushReasoningPart();
+                flushTextPart();
+                const parsedInput = event.inputTruncated
+                  ? { preview: event.inputPreview }
+                  : (event.input ?? {});
+
                 writer.write({
                   type: 'tool-input-available',
                   toolCallId: event.id,
                   toolName: event.name,
-                  input: event.inputTruncated
-                    ? { preview: event.inputPreview }
-                    : (event.input ?? {}),
+                  input: parsedInput,
                   dynamic: true,
+                });
+
+                recordedToolIndexById.set(event.id, recordedNativeParts.length);
+                recordedNativeParts.push({
+                  type: 'dynamic-tool',
+                  toolName: event.name,
+                  toolCallId: event.id,
+                  state: 'input-available',
+                  input: parsedInput,
                 });
                 return;
               }
 
               if (event.type === 'tool_end') {
+                const idx = recordedToolIndexById.get(event.id);
                 if (event.isError) {
+                  const errorText = event.content ?? 'Tool execution failed.';
                   writer.write({
                     type: 'tool-output-error',
                     toolCallId: event.id,
-                    errorText: event.content ?? 'Tool execution failed.',
+                    errorText,
                     dynamic: true,
                   });
+                  if (idx !== undefined && recordedNativeParts[idx]) {
+                    recordedNativeParts[idx] = {
+                      ...recordedNativeParts[idx],
+                      state: 'output-error',
+                      errorText,
+                    };
+                  }
                 } else {
+                  const parsedOutput = parseJsonOrString(event.content);
                   writer.write({
                     type: 'tool-output-available',
                     toolCallId: event.id,
-                    output: parseJsonOrString(event.content),
+                    output: parsedOutput,
                     dynamic: true,
                   });
+                  if (idx !== undefined && recordedNativeParts[idx]) {
+                    recordedNativeParts[idx] = {
+                      ...recordedNativeParts[idx],
+                      state: 'output-available',
+                      output: parsedOutput,
+                    };
+                  }
                 }
               }
             },
@@ -277,8 +452,8 @@ export async function POST(request: Request): Promise<Response> {
 
           fxTransportLabel = outcome.transport;
           ensureFramingStarted();
-          closeOpenReasoning();
-          closeOpenText();
+          flushReasoningPart();
+          flushTextPart();
           writer.write({ type: 'finish-step' });
 
           const inputTokens = outcome.result.usage?.inputTokens ?? 0;
@@ -334,6 +509,7 @@ export async function POST(request: Request): Promise<Response> {
             });
             activeBillingSource = creds.billingSource;
             activeModelId = creds.modelId;
+            activeBillingLabel = creds.billingInfo.label;
             try {
               await runNativeFx(creds);
               return;
@@ -357,14 +533,16 @@ export async function POST(request: Request): Promise<Response> {
           });
           activeBillingSource = fallbackResolved.billingSource;
           activeModelId = fallbackResolved.modelId;
+          activeBillingLabel = fallbackResolved.billingInfo.label;
 
-          const modelMessages = await convertToModelMessages(validatedMessages, {
-            ignoreIncompleteToolCalls: true,
-          });
           const fallbackTools = createFxFallbackAiTools({
             chatId,
             userId: session.userId,
             sandboxTier: effectiveSandboxTier,
+          });
+          const modelMessages = await convertToModelMessages(validatedMessages, {
+            tools: fallbackTools,
+            ignoreIncompleteToolCalls: true,
           });
 
           const fallbackResult = streamText({
@@ -425,17 +603,26 @@ export async function POST(request: Request): Promise<Response> {
             metadata: latestUserMessage.metadata ?? null,
           });
         }
-        if (finalAssistantMessage && finalAssistantMessage.parts.length > 0) {
+
+        const assistantParts =
+          finalAssistantMessage && finalAssistantMessage.parts.length >= recordedNativeParts.length
+            ? finalAssistantMessage.parts
+            : recordedNativeParts.length > 0
+              ? recordedNativeParts
+              : (finalAssistantMessage?.parts ?? []);
+
+        if (assistantParts.length > 0) {
           toSave.push({
-            id: finalAssistantMessage.id || generateId('msg'),
+            id: finalAssistantMessage?.id || generateId('msg'),
             chatId,
             role: 'assistant',
-            parts: finalAssistantMessage.parts,
+            parts: assistantParts,
             metadata: {
-              ...(finalAssistantMessage.metadata ?? {}),
+              ...(finalAssistantMessage?.metadata ?? {}),
               modelId: activeModelId,
               harnessMode: 'fx',
               billingSource: activeBillingSource,
+              billingLabel: activeBillingLabel,
               latencyMs: durationMs,
             },
           });

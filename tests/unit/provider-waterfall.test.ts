@@ -9,6 +9,7 @@ import {
   checkVercelGatewayCredits,
   invalidateVercelGatewayCreditsCache,
   isUserTokenBillingError,
+  refreshVercelOAuthToken,
 } from '@/lib/ai/credits';
 import {
   DEFAULT_MODEL_ID,
@@ -22,6 +23,7 @@ import {
   ProviderNotConfiguredError,
   resolveFastLanguageModel,
   resolveLanguageModel,
+  resolveRealtimeTokenConfig,
   type UserVercelAuth,
 } from '@/lib/ai/provider';
 
@@ -117,7 +119,8 @@ describe('5-tier provider & billing waterfall', () => {
     expect(resolved.billingInfo.providerName).toBe('openrouter.example.test');
   });
 
-  it('Tier 2a (user-byok-gateway for vck_*) beats user OAuth and all host keys', async () => {
+  it('Tier 2a (user-byok-gateway for vck_*) beats host OPENAI_COMPATIBLE_BASE_URL, user OAuth, and all host keys', async () => {
+    process.env.OPENAI_COMPATIBLE_BASE_URL = 'https://host-custom.example.test/v1';
     process.env.OPENAI_API_KEY = 'sk-host-openai';
     process.env.AI_GATEWAY_API_KEY = 'vck_host_gateway';
     process.env.VERCEL_OIDC_TOKEN = 'oidc_host_token';
@@ -188,7 +191,7 @@ describe('5-tier provider & billing waterfall', () => {
     });
 
     const resolved = await resolveLanguageModel({
-      modelId: 'google/gemini-4-neon',
+      modelId: 'google/gemini-4-carbon',
       userVercelAuth: {
         accessToken: token,
       },
@@ -196,7 +199,7 @@ describe('5-tier provider & billing waterfall', () => {
 
     expect(capturedAuthHeader).toBe(`Bearer ${token}`);
     expect(resolved.billingSource).toBe('user-vercel-oauth');
-    expect(resolved.modelId).toBe('google/gemini-4-neon');
+    expect(resolved.modelId).toBe('google/gemini-4-carbon');
     expect(resolved.creditsRemaining).toBe(18.75);
     expect(resolved.billingInfo.isUserBilled).toBe(true);
 
@@ -489,6 +492,54 @@ describe('5-tier provider & billing waterfall', () => {
     await expect(resolveLanguageModel()).rejects.toBeInstanceOf(ProviderNotConfiguredError);
     const diagnostics = await getProviderDiagnostics();
     expect(diagnostics.activeBillingSource).toBe('unconfigured');
+  });
+
+  it('resolveRealtimeTokenConfig coerces non-realtime chat models to valid Gateway/OpenAI realtime models', async () => {
+    process.env.AI_GATEWAY_API_KEY = 'vck_realtime_gateway';
+    const gwRealtime = await resolveRealtimeTokenConfig({
+      modelId: 'anthropic/claude-sonnet-5.5',
+    });
+    expect(gwRealtime.supported).toBe(true);
+    expect(gwRealtime.transport).toBe('gateway');
+    expect(gwRealtime.modelId).toBe('openai/gpt-realtime-2');
+
+    delete process.env.AI_GATEWAY_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-realtime-openai';
+    const openaiRealtime = await resolveRealtimeTokenConfig({
+      modelId: 'openai/gpt-6.2-sol',
+    });
+    expect(openaiRealtime.supported).toBe(true);
+    expect(openaiRealtime.transport).toBe('openai');
+    expect(openaiRealtime.modelId).toBe('gpt-realtime');
+  });
+
+  it('refreshVercelOAuthToken supports Vercel Connect refresh via connect.vercel.com when VERCEL_CONNECT_VERCEL_UID is set', async () => {
+    process.env.VERCEL_CONNECT_VERCEL_UID = 'conn_uid_123';
+    process.env.VERCEL_OIDC_TOKEN = 'oidc_connect_jwt_456';
+
+    let capturedUrl = '';
+    let capturedAuth = '';
+    setMockFetch(async (input, init) => {
+      capturedUrl =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      capturedAuth = new Headers(init?.headers).get('authorization') ?? '';
+      return new Response(
+        JSON.stringify({
+          access_token: 'vca_connect_refreshed_789',
+          refresh_token: 'vcr_connect_rotated_999',
+          expires_in: 3600,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+
+    const refreshed = await refreshVercelOAuthToken('vcr_connect_initial', {
+      providerId: 'vercel-connect',
+    });
+    expect(capturedUrl).toBe('https://connect.vercel.com/oauth/token');
+    expect(capturedAuth.startsWith('Basic ')).toBe(true);
+    expect(refreshed?.accessToken).toBe('vca_connect_refreshed_789');
+    expect(refreshed?.refreshToken).toBe('vcr_connect_rotated_999');
   });
 
   it('NEVER leaks raw secrets in getProviderDiagnostics() or /api/provider/status', async () => {

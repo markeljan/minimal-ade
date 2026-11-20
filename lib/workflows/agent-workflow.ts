@@ -288,65 +288,20 @@ async function stepBrowserSnapshot(chatId: string) {
 async function stepWebFetch(url: string, maxChars: number) {
   'use step';
   const startedAt = Date.now();
-  const { validateExternalUrl } = await import('@/lib/sandbox/browser-service');
-  let currentUrl: URL;
-  try {
-    currentUrl = validateExternalUrl(url);
-  } catch (error) {
-    return {
-      ok: false,
-      url,
-      error: error instanceof Error ? error.message : 'Invalid or restricted URL.',
-    };
-  }
+  const { readResponseTextBounded, safeExternalFetch } = await import(
+    '@/lib/sandbox/browser-service'
+  );
 
   try {
-    const MAX_REDIRECTS = 5;
-    let response: Response | null = null;
+    const { response, finalUrl } = await safeExternalFetch(url, {
+      method: 'GET',
+      headers: { 'User-Agent': 'MinimalADE-Workflow/1.0' },
+      maxRedirects: 5,
+      timeoutMs: 10_000,
+    });
 
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-      response = await fetch(currentUrl.toString(), {
-        method: 'GET',
-        redirect: 'manual',
-        headers: { 'User-Agent': 'MinimalADE-Workflow/1.0' },
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get('location');
-        if (!location) {
-          break;
-        }
-        if (hop === MAX_REDIRECTS) {
-          return {
-            ok: false,
-            url: currentUrl.toString(),
-            error: 'Too many redirects while fetching URL.',
-          };
-        }
-        try {
-          const nextUrl = new URL(location, currentUrl);
-          currentUrl = validateExternalUrl(nextUrl.toString());
-        } catch (redirectErr) {
-          return {
-            ok: false,
-            url: currentUrl.toString(),
-            error:
-              redirectErr instanceof Error
-                ? redirectErr.message
-                : 'Redirect target is invalid or restricted.',
-          };
-        }
-        continue;
-      }
-      break;
-    }
-
-    if (!response) {
-      return { ok: false, url: currentUrl.toString(), error: 'Empty fetch response.' };
-    }
-
-    const text = (await response.text())
+    const rawText = await readResponseTextBounded(response, 512 * 1024);
+    const text = rawText
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
@@ -366,13 +321,13 @@ async function stepWebFetch(url: string, maxChars: number) {
     return {
       ok: response.ok,
       status: response.status,
-      url: response.url || currentUrl.toString(),
+      url: finalUrl,
       content: text.slice(0, maxChars),
     };
   } catch (error) {
     return {
       ok: false,
-      url: currentUrl.toString(),
+      url,
       error: error instanceof Error ? error.message : 'Web fetch failed.',
     };
   }

@@ -25,11 +25,17 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    const chatId = normalizeChatId(parsed.data.chatId);
-    const access = await authorizeSandboxChatAccess(request, chatId, 'write');
+    const requestedChatId = normalizeChatId(parsed.data.chatId);
+    const access = await authorizeSandboxChatAccess(request, requestedChatId, 'write', {
+      requireOwnedChat: parsed.data.tier === 'vercel-sandbox',
+    });
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const chatId = access.effectiveChatId ?? requestedChatId;
 
     const result = await execCommand(chatId, parsed.data.command, {
       cwd: parsed.data.cwd,

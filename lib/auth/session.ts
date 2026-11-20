@@ -40,7 +40,11 @@ export interface UpdateVercelTokensInput {
 }
 
 function getGuestSigningSecret(): string | null {
-  return process.env.BETTER_AUTH_SECRET?.trim() || process.env.AUTH_SECRET?.trim() || null;
+  const secret = process.env.BETTER_AUTH_SECRET?.trim() || process.env.AUTH_SECRET?.trim() || null;
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('BETTER_AUTH_SECRET (or AUTH_SECRET) must be configured in production.');
+  }
+  return secret;
 }
 
 function computeGuestSignature(guestId: string, secret: string): string {
@@ -62,10 +66,13 @@ export function parseGuestCookieValue(rawValue: string | null | undefined): stri
     return null;
   }
 
+  const secret = getGuestSigningSecret();
   const trimmed = rawValue.trim();
   const dotIdx = trimmed.indexOf('.');
   if (dotIdx === -1) {
-    return !getGuestSigningSecret() && GUEST_ID_PATTERN.test(trimmed) ? trimmed : null;
+    return process.env.NODE_ENV !== 'production' && !secret && GUEST_ID_PATTERN.test(trimmed)
+      ? trimmed
+      : null;
   }
 
   const guestId = trimmed.slice(0, dotIdx);
@@ -74,9 +81,8 @@ export function parseGuestCookieValue(rawValue: string | null | undefined): stri
     return null;
   }
 
-  const secret = getGuestSigningSecret();
   if (!secret) {
-    return guestId;
+    return process.env.NODE_ENV !== 'production' ? guestId : null;
   }
 
   const expected = computeGuestSignature(guestId, secret);

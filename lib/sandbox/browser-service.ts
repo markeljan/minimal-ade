@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { promisify } from 'node:util';
 import { runAgentBrowserCommand, type VercelSandboxSession } from '@agent-browser/sandbox/vercel';
 import type { AgentBrowserSession } from 'remote-agent-browser';
@@ -85,6 +86,7 @@ export interface RelayGrantResult {
   ok: boolean;
   wsUrl?: string;
   grantToken?: string;
+  authProtocol?: 'ticket';
   role: 'watch' | 'control';
   expiresAt?: string;
   origin?: string;
@@ -289,6 +291,89 @@ export function validateExternalUrl(rawUrl: string): URL {
   return parsed;
 }
 
+export type DnsUrlValidationResult = { ok: true; url: URL } | { ok: false; error: string };
+
+/**
+ * Validates an external URL syntactically AND resolves DNS (`A` + `AAAA`) to ensure
+ * EVERY resolved IP address is public (not loopback, private, link-local, CGNAT, or metadata).
+ */
+export async function validateExternalUrlWithDns(rawUrl: string): Promise<DnsUrlValidationResult> {
+  let parsed: URL;
+  try {
+    parsed = validateExternalUrl(rawUrl);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : `Invalid URL: "${rawUrl}"`,
+    };
+  }
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (parseIpv4Octets(host) || host.includes(':')) {
+    return { ok: true, url: parsed };
+  }
+
+  try {
+    const records = await dnsLookup(host, { all: true, verbatim: true });
+    if (!Array.isArray(records) || records.length === 0) {
+      return { ok: false, error: `Unable to resolve host "${parsed.hostname}".` };
+    }
+    for (const record of records) {
+      if (!record.address || isPrivateOrBlockedHost(record.address)) {
+        return {
+          ok: false,
+          error: `Host "${parsed.hostname}" resolves to a restricted address.`,
+        };
+      }
+    }
+    return { ok: true, url: parsed };
+  } catch {
+    return { ok: false, error: `Unable to resolve host "${parsed.hostname}".` };
+  }
+}
+
+/**
+ * Streams a `Response` body up to `maxBytes`, cancelling the underlying stream
+ * immediately once the byte cap is reached to prevent memory exhaustion.
+ */
+export async function readResponseTextBounded(
+  response: Response,
+  maxBytes = 512 * 1024,
+): Promise<string> {
+  if (!response.body) {
+    const text = await response.text();
+    return text.slice(0, maxBytes);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  let totalBytes = 0;
+  let output = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+
+      const remaining = maxBytes - totalBytes;
+      if (value.byteLength >= remaining) {
+        output += decoder.decode(value.subarray(0, remaining), { stream: false });
+        totalBytes = maxBytes;
+        await reader.cancel().catch(() => undefined);
+        return output;
+      }
+
+      totalBytes += value.byteLength;
+      output += decoder.decode(value, { stream: true });
+    }
+    output += decoder.decode();
+    return output;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export interface SafeExternalFetchOptions extends Omit<RequestInit, 'redirect'> {
   maxRedirects?: number;
   timeoutMs?: number;
@@ -296,7 +381,7 @@ export interface SafeExternalFetchOptions extends Omit<RequestInit, 'redirect'> 
 
 /**
  * SSRF-safe external HTTP fetch that validates the initial URL and EVERY HTTP redirect
- * `Location` hop against `validateExternalUrl` using `redirect: 'manual'`.
+ * `Location` hop against `validateExternalUrlWithDns` using `redirect: 'manual'`.
  */
 export async function safeExternalFetch(
   rawUrl: string,
@@ -312,7 +397,11 @@ export async function safeExternalFetch(
   outerSignal?.addEventListener('abort', abortFromOuter, { once: true });
 
   try {
-    let currentUrl = validateExternalUrl(rawUrl).toString();
+    const initialCheck = await validateExternalUrlWithDns(rawUrl);
+    if (!initialCheck.ok) {
+      throw new Error(initialCheck.error);
+    }
+    let currentUrl = initialCheck.url.toString();
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       const response = await fetch(currentUrl, {
@@ -348,7 +437,11 @@ export async function safeExternalFetch(
         throw new Error(`Invalid redirect location: "${location}"`);
       }
 
-      currentUrl = validateExternalUrl(resolvedNext).toString();
+      const hopCheck = await validateExternalUrlWithDns(resolvedNext);
+      if (!hopCheck.ok) {
+        throw new Error(hopCheck.error);
+      }
+      currentUrl = hopCheck.url.toString();
     }
 
     throw new Error(`Too many redirects (exceeded ${maxRedirects} hops).`);
@@ -534,7 +627,7 @@ async function fetchHttpSnapshot(url: string): Promise<{
 
   const parsedFinal = new URL(finalUrl);
   const contentType = response.headers.get('content-type') ?? 'text/html';
-  const rawText = (await response.text()).slice(0, 512_000);
+  const rawText = await readResponseTextBounded(response, 512 * 1024);
 
   if (contentType.includes('application/json') || contentType.includes('text/plain')) {
     const summary = rawText.slice(0, 8_000);
@@ -569,6 +662,30 @@ interface RelayTarget {
   isLoopback: boolean;
 }
 
+async function extractRelayTokenFromSessionJson(
+  sandbox: { fs: { readFile: (filePath: string, encoding: BufferEncoding) => Promise<string> } },
+  rawJson: string,
+): Promise<string | undefined> {
+  const parsed = JSON.parse(rawJson) as { tokenFile?: string; token?: string };
+
+  if (typeof parsed.tokenFile === 'string' && parsed.tokenFile.trim().length > 0) {
+    try {
+      const fromFile = (await sandbox.fs.readFile(parsed.tokenFile.trim(), 'utf8')).trim();
+      if (/^[0-9a-f]{64}$/.test(fromFile)) {
+        return fromFile;
+      }
+    } catch {
+      // Fall back to inline `token` field if present.
+    }
+  }
+
+  if (typeof parsed.token === 'string' && /^[0-9a-f]{64}$/.test(parsed.token.trim())) {
+    return parsed.token.trim();
+  }
+
+  return undefined;
+}
+
 async function resolveScreenRelayTarget(chatId: string): Promise<RelayTarget | null> {
   const id = normalizeChatId(chatId);
   const cloud = getActiveCloudSandbox(id);
@@ -576,19 +693,18 @@ async function resolveScreenRelayTarget(chatId: string): Promise<RelayTarget | n
   if (cloud?.relayUrl) {
     let token = cloud.relayToken;
     if (!token) {
-      // Read session token strictly server-side from the sandbox state file if screen-relay is running.
+      // Read session token strictly server-side from session.json (`tokenFile` -> `token` fallback).
       try {
         const raw = await cloud.sandbox.fs.readFile(
           '/root/.local/state/screen-relay/default/session.json',
           'utf8',
         );
-        const parsed = JSON.parse(raw) as { token?: string };
-        if (typeof parsed.token === 'string' && /^[0-9a-f]{64}$/.test(parsed.token)) {
-          token = parsed.token;
+        const extracted = await extractRelayTokenFromSessionJson(cloud.sandbox, raw);
+        if (extracted) {
+          token = extracted;
           cloud.relayToken = token;
         }
       } catch {
-        // Also try user home path inside sandbox.
         try {
           const cmd = await cloud.sandbox.runCommand('bash', [
             '-lc',
@@ -596,9 +712,9 @@ async function resolveScreenRelayTarget(chatId: string): Promise<RelayTarget | n
           ]);
           const out = (await cmd.stdout()).trim();
           if (out) {
-            const parsed = JSON.parse(out) as { token?: string };
-            if (typeof parsed.token === 'string' && /^[0-9a-f]{64}$/.test(parsed.token)) {
-              token = parsed.token;
+            const extracted = await extractRelayTokenFromSessionJson(cloud.sandbox, out);
+            if (extracted) {
+              token = extracted;
               cloud.relayToken = token;
             }
           }
@@ -683,8 +799,11 @@ export async function probeScreenRelay(chatId: string): Promise<{
 
 /**
  * SECURITY INVARIANT:
- * Mints a short-lived scoped `watch` or `control` browser grant from `screen-relay`.
- * The raw 64-hex `screen-relay` session token NEVER leaves the server!
+ * Mints a one-time viewer ticket via `screen-relay@0.1.2`'s `POST /tickets` endpoint
+ * (authenticated server-side via `Authorization: Bearer <sessionToken>`), returning ONLY
+ * `{ wsUrl, grantToken, authProtocol: 'ticket', role, expiresAt }`.
+ * - Interactive control targets `/stream`; view-only watch targets `/stream?view=1`.
+ * - The raw 64-hex `screen-relay` session token NEVER leaves the server!
  */
 export async function mintRelayGrant(
   chatId: string,
@@ -703,7 +822,8 @@ export async function mintRelayGrant(
     };
   }
 
-  const streamPath = role === 'control' ? '/stream?take=1' : '/stream?view=1';
+  // Real screen-relay@0.1.2 C++ engine accepts `/stream` (control) or `/stream?view=1` (watch).
+  const streamPath = role === 'control' ? '/stream' : '/stream?view=1';
   const wsOrigin = target.origin.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
   const wsUrl = `${wsOrigin}${streamPath}`;
 
@@ -718,35 +838,44 @@ export async function mintRelayGrant(
       headers.authorization = `Bearer ${target.sessionToken}`;
     }
 
-    const grantRes = await fetch(`${target.origin}/grants/${role}?ttl=${clampedTtl}`, {
+    const ticketRes = await fetch(`${target.origin}/tickets`, {
       method: 'POST',
       cache: 'no-store',
       signal: controller.signal,
       headers,
     });
 
-    if (grantRes.ok) {
-      const body = (await grantRes.json().catch(() => ({}))) as {
+    if (ticketRes.ok) {
+      const body = (await ticketRes.json().catch(() => ({}))) as {
+        ticket?: string;
         token?: string;
         grant?: string;
         grantToken?: string;
+        expires_in?: number;
         expiresAt?: string | number;
         expires_at?: string | number;
         ttl?: number;
       };
-      const grantToken = body.token ?? body.grantToken ?? body.grant;
+      const grantToken = body.ticket ?? body.token ?? body.grantToken ?? body.grant;
       if (grantToken && grantToken !== target.sessionToken) {
+        const ttlSeconds =
+          typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
+            ? body.expires_in
+            : typeof body.ttl === 'number' && Number.isFinite(body.ttl)
+              ? body.ttl
+              : clampedTtl;
         const expiresAt =
           typeof body.expiresAt === 'string'
             ? body.expiresAt
             : typeof body.expires_at === 'string'
               ? body.expires_at
-              : new Date(Date.now() + (body.ttl ?? clampedTtl) * 1000).toISOString();
+              : new Date(Date.now() + ttlSeconds * 1000).toISOString();
 
         return {
           ok: true,
           wsUrl,
           grantToken,
+          authProtocol: 'ticket',
           role,
           expiresAt,
           origin: target.origin,
@@ -774,8 +903,8 @@ export async function mintRelayGrant(
       ok: false,
       role,
       origin: target.origin,
-      error: `Failed to mint scoped ${role} grant (HTTP ${grantRes.status}).`,
-      hint: 'Ensure screen-relay is running with grants enabled and a valid server-side session token.',
+      error: `Failed to mint one-time ${role} ticket (HTTP ${ticketRes.status}).`,
+      hint: 'Ensure screen-relay@0.1.2 is running with a valid server-side session token.',
     };
   } catch (error) {
     return {
@@ -801,6 +930,8 @@ function getLocalAgentBrowserStreamUrl(): string | undefined {
   return `ws://127.0.0.1:${port}/?pacing=ack&maxFps=15`;
 }
 
+const sandboxStreamInitialized = new Set<string>();
+
 async function tryRunSandboxAgentBrowser(
   chatId: string,
   args: string[],
@@ -809,7 +940,12 @@ async function tryRunSandboxAgentBrowser(
   if (!cloud) return null;
 
   const sandboxAdapter: VercelSandboxSession = {
-    runCommand: (command, cmdArgs) => cloud.sandbox.runCommand(command, [...cmdArgs]),
+    runCommand: (command, cmdArgs) =>
+      cloud.sandbox.runCommand({
+        cmd: command,
+        args: [...cmdArgs],
+        env: { AGENT_BROWSER_STREAM_PORT: '4848' },
+      }),
     snapshot: async () => {
       const snap = await cloud.sandbox.snapshot();
       return { snapshotId: snap.snapshotId };
@@ -819,10 +955,21 @@ async function tryRunSandboxAgentBrowser(
     },
   };
 
+  const sessionName = sanitizeSandboxName(chatId);
+
   try {
     const result = await runAgentBrowserCommand(sandboxAdapter, args, {
-      session: sanitizeSandboxName(chatId),
+      session: sessionName,
     });
+
+    if (!sandboxStreamInitialized.has(cloud.sandboxName)) {
+      sandboxStreamInitialized.add(cloud.sandboxName);
+      // Enable Mode C WebSocket JPEG streaming on exposed sandbox port 4848 (best-effort).
+      void runAgentBrowserCommand(sandboxAdapter, ['stream', 'enable', '--port', '4848'], {
+        session: sessionName,
+      }).catch(() => undefined);
+    }
+
     const streamUrl = cloud.browserStreamUrl
       ? `${cloud.browserStreamUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')}/?pacing=ack&maxFps=15`
       : undefined;
@@ -1139,8 +1286,9 @@ export async function browserSnapshot(
   }
 
   if (session.url.startsWith('workspace://')) {
+    const relPath = session.url.replace(/^workspace:\/\//, '').trim() || 'index.html';
     const files = await getAllFilesRecord(id);
-    const html = files['index.html'] ?? '';
+    const html = files[relPath] ?? files['index.html'] ?? '';
     const parsed = parseHtmlSnapshot(html, session.url);
     session.title = parsed.title;
     session.textSummary = parsed.textSummary;

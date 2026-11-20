@@ -34,38 +34,19 @@ function shellEscapeSingle(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-function resolveTrustedAppOrigin(): string {
-  const candidates = [
-    process.env.NEXT_PUBLIC_APP_URL?.trim(),
-    process.env.BETTER_AUTH_URL?.trim(),
-    process.env.VERCEL_URL?.trim() ? `https://${process.env.VERCEL_URL.trim()}` : undefined,
-    'http://localhost:3000',
-  ];
-
-  for (const raw of candidates) {
-    if (!raw) continue;
-    try {
-      const parsed = new URL(raw);
-      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-        return parsed.origin;
-      }
-    } catch {
-      // Try next trusted origin candidate.
-    }
-  }
-
-  return 'http://localhost:3000';
-}
-
 export async function GET(request: Request): Promise<Response> {
   try {
     const { searchParams } = new URL(request.url);
-    const chatId = normalizeChatId(searchParams.get('chatId'));
+    const requestedChatId = normalizeChatId(searchParams.get('chatId'));
 
-    const access = await authorizeSandboxChatAccess(request, chatId, 'read');
+    const access = await authorizeSandboxChatAccess(request, requestedChatId, 'read');
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const chatId = access.effectiveChatId ?? requestedChatId;
 
     const [status, files, fileMap, browser] = await Promise.all([
       getSandboxStatus(chatId),
@@ -99,12 +80,19 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const { action, tier, snapshotId } = parsed.data;
-    const chatId = normalizeChatId(parsed.data.chatId);
+    const requestedChatId = normalizeChatId(parsed.data.chatId);
+    const requiresOwnedChat = action === 'upgrade' || action === 'boot-desktop';
 
-    const access = await authorizeSandboxChatAccess(request, chatId, 'write');
+    const access = await authorizeSandboxChatAccess(request, requestedChatId, 'write', {
+      requireOwnedChat: requiresOwnedChat,
+    });
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const chatId = access.effectiveChatId ?? requestedChatId;
 
     if (action === 'set-tier' && tier) {
       setPreferredTier(chatId, tier);
@@ -140,7 +128,6 @@ export async function POST(request: Request): Promise<Response> {
 
       let desktopNotice: string | undefined;
       if (action === 'boot-desktop' && cloud.entry.relayUrl) {
-        const appOrigin = resolveTrustedAppOrigin();
         let relayOrigin: string | null = null;
         try {
           const parsedRelay = new URL(cloud.entry.relayUrl);
@@ -152,7 +139,8 @@ export async function POST(request: Request): Promise<Response> {
         }
 
         if (relayOrigin) {
-          const bootCmd = `if command -v screen-relay >/dev/null 2>&1; then screen-relay up -d --bind 0.0.0.0 --public ${shellEscapeSingle(relayOrigin)} --allow-origin ${shellEscapeSingle(appOrigin)} >/dev/null 2>&1 && echo "relay_started" || echo "relay_failed"; else echo "relay_missing"; fi`;
+          // Real screen-relay@0.1.2 CLI syntax: `screen-relay up -d --public <origin>` (no --allow-origin flag).
+          const bootCmd = `if command -v screen-relay >/dev/null 2>&1; then screen-relay up -d --public ${shellEscapeSingle(relayOrigin)} >/dev/null 2>&1 && echo "relay_started" || echo "relay_failed"; else echo "relay_missing"; fi`;
           const res = await cloud.entry.sandbox
             .runCommand('bash', ['-lc', bootCmd], { timeoutMs: 25_000 })
             .catch(() => null);

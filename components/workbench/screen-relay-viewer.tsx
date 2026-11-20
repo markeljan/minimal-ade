@@ -34,11 +34,33 @@ interface RelayGrantResponse {
   ok: boolean;
   wsUrl?: string;
   grantToken?: string;
+  authProtocol?: 'ticket';
   role: 'watch' | 'control';
   expiresAt?: string;
   loopbackNoAuth?: boolean;
   error?: string;
   hint?: string;
+}
+
+function closeSocketCleanly(ws: WebSocket | null): Promise<void> {
+  if (!ws || ws.readyState === WebSocket.CLOSED) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const timer = window.setTimeout(finish, 400);
+    ws.addEventListener('close', finish, { once: true });
+    ws.addEventListener('error', finish, { once: true });
+    if (ws.readyState < WebSocket.CLOSING) {
+      ws.close();
+    }
+  });
 }
 
 const BUTTON_MAP: Record<number, 1 | 2 | 3> = { 0: 1, 1: 2, 2: 3 };
@@ -212,7 +234,7 @@ export function ScreenRelayViewer({
     return () => window.clearInterval(timer);
   }, []);
 
-  // Reconnect on `/stream?view=1` <-> `/stream?take=1` whenever `hasControl` or `chatId` changes.
+  // Reconnect on `/stream?view=1` <-> `/stream` whenever `hasControl` or `chatId` changes.
   useEffect(() => {
     if (reconnectNonce < 0) return;
     if (
@@ -233,14 +255,20 @@ export function ScreenRelayViewer({
 
     async function connectRelay() {
       releaseAllInputs();
+      // Close any previous viewer socket BEFORE opening a new one (screen-relay@0.1.2 allows 1 viewer).
+      const previousWs = wsRef.current;
+      wsRef.current = null;
+      await closeSocketCleanly(previousWs);
+      if (cancelled) return;
+
       resetDecoder();
       setConnectionState('connecting');
       setErrorHint(null);
       const role: 'watch' | 'control' = hasControl ? 'control' : 'watch';
       setStatusMessage(
         role === 'control'
-          ? 'Minting control grant (/stream?take=1)…'
-          : 'Minting view-only grant (/stream?view=1)…',
+          ? 'Minting one-time control ticket (/stream)…'
+          : 'Minting one-time view ticket (/stream?view=1)…',
       );
       onConnectionChangeRef.current?.(false, 'Connecting…');
 
@@ -255,7 +283,7 @@ export function ScreenRelayViewer({
         grant = (await res.json()) as RelayGrantResponse;
       } catch (error) {
         if (cancelled) return;
-        const msg = error instanceof Error ? error.message : 'Grant request failed';
+        const msg = error instanceof Error ? error.message : 'Ticket request failed';
         setConnectionState('error');
         setStatusMessage(msg);
         onConnectionChangeRef.current?.(false, msg);
@@ -275,13 +303,14 @@ export function ScreenRelayViewer({
         return;
       }
 
-      // Ensure explicit /stream?view=1 <-> /stream?take=1 query state.
+      // Real screen-relay@0.1.2 C++ engine targets `/stream` (control) and `/stream?view=1` (watch).
       const streamUrl = new URL(grant.wsUrl);
       streamUrl.pathname = '/stream';
-      streamUrl.search = hasControl ? '?take=1' : '?view=1';
+      streamUrl.search = hasControl ? '' : '?view=1';
 
+      // Authenticate using one-time `ticket.<TICKET>` subprotocol (never raw `bearer.<TOKEN>`).
       const protocols = grant.grantToken
-        ? [SUBPROTOCOL, `bearer.${grant.grantToken}`]
+        ? [SUBPROTOCOL, `ticket.${grant.grantToken}`]
         : [SUBPROTOCOL];
 
       const ws = new WebSocket(streamUrl.toString(), protocols);
@@ -739,10 +768,10 @@ export function ScreenRelayViewer({
         <div className="flex items-center gap-2">
           <span
             className="hidden items-center gap-1 rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400 sm:inline-flex"
-            title="Scoped short-lived browser grant — raw session token never leaves the server"
+            title="One-time short-lived viewer ticket — raw session token never leaves the server"
           >
             <ShieldCheck className="h-3 w-3 text-emerald-400" />
-            {hasControl ? 'grant:control' : 'grant:watch'}
+            {hasControl ? 'ticket:control' : 'ticket:watch'}
           </span>
           {hasControl && (
             <button

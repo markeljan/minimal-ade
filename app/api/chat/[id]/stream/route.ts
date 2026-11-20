@@ -97,8 +97,8 @@ interface RouteContext {
 
 /**
  * Resumes an in-progress chat SSE stream when Upstash Redis is configured.
- * Enforces chat ownership on private chats and degrades cleanly to HTTP 204
- * when Redis is absent or no active stream exists.
+ * Enforces fail-closed chat ownership on private chats and degrades cleanly to
+ * HTTP 204 when Redis is absent or no active stream exists.
  */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   const { id } = await context.params;
@@ -106,10 +106,14 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     return new Response(null, { status: 204 });
   }
 
-  const [session, existingChat] = await Promise.all([
-    getServerSession(request.headers),
-    getChatById(id).catch(() => null),
-  ]);
+  const session = await getServerSession(request.headers);
+
+  let existingChat: Awaited<ReturnType<typeof getChatById>>;
+  try {
+    existingChat = await getChatById(id);
+  } catch {
+    return NextResponse.json({ error: 'Unable to verify chat stream ownership.' }, { status: 503 });
+  }
 
   if (
     existingChat &&

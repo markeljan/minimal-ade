@@ -2,6 +2,7 @@ import { createGithubTools } from '@github-tools/sdk';
 import { put } from '@vercel/blob';
 import { generateImage, generateText, type ToolSet, tool } from 'ai';
 import { z } from 'zod';
+import { invalidateVercelGatewayCreditsCache, isUserTokenBillingError } from '@/lib/ai/credits';
 import {
   type ProviderOverrideInput,
   resolveImageGenerator,
@@ -17,11 +18,14 @@ import {
   browserScreenshot,
   browserScroll,
   browserSnapshot,
-  validateExternalUrl,
+  readResponseTextBounded,
+  safeExternalFetch,
 } from '@/lib/sandbox/browser-service';
 import { createWorkspaceBashTool, listFiles, readFile, writeFile } from '@/lib/sandbox/manager';
 import type { ArtifactKind, SandboxTier } from '@/lib/types';
 import { generateId, sanitizeFilename } from '@/lib/utils';
+
+const MAX_WEB_FETCH_BYTES = 512 * 1024; // 512 KB strict streaming cap
 
 const DESTRUCTIVE_COMMAND_PATTERNS: readonly RegExp[] = [
   /\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\b/,
@@ -102,6 +106,8 @@ export interface CreateAdeToolsOptions {
   userId: string;
   sandboxTier?: SandboxTier;
   enableUiBridge?: boolean;
+  /** Whether `ui_act` requires explicit Sentinel human approval before executing (default true). */
+  uiActRequireApproval?: boolean;
   providerOverride?: ProviderOverrideInput | null;
   userVercelAuth?: UserVercelAuth | null;
   githubToken?: string;
@@ -135,6 +141,7 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
     userId,
     sandboxTier,
     enableUiBridge = true,
+    uiActRequireApproval = true,
     providerOverride,
     userVercelAuth,
     githubToken,
@@ -501,6 +508,21 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
           workbenchTab: 'browser' as const,
         };
       },
+      toModelOutput: ({ output }) => ({
+        type: 'json',
+        value: {
+          ok: output.ok,
+          url: output.url,
+          title: output.title ?? null,
+          screenshotCaptured: Boolean(output.screenshotDataUrl),
+          screenshotDataUrl: output.screenshotDataUrl?.startsWith('data:')
+            ? '[inline screenshot rendered in UI; base64 omitted from model context]'
+            : (output.screenshotDataUrl ?? null),
+          statusMessage: output.statusMessage ?? null,
+          error: output.error ?? null,
+          workbenchTab: output.workbenchTab,
+        },
+      }),
     }),
 
     browser_read: tool({
@@ -574,11 +596,12 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
         modelId: z.string().optional().describe('Optional image model override'),
       }),
       execute: async ({ prompt, aspectRatio = '1:1', modelId }) => {
-        try {
+        const runGeneration = async (skipUserToken: boolean) => {
           const resolved = await resolveImageGenerator({
             modelId,
             override: providerOverride,
             userVercelAuth,
+            skipUserToken,
           });
 
           let imageBytes: Uint8Array | null = null;
@@ -606,6 +629,23 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
             }
           }
 
+          return { resolved, imageBytes, mediaType };
+        };
+
+        try {
+          let outcome: Awaited<ReturnType<typeof runGeneration>>;
+          try {
+            outcome = await runGeneration(false);
+          } catch (error) {
+            if (userVercelAuth?.accessToken && isUserTokenBillingError(error)) {
+              invalidateVercelGatewayCreditsCache(userVercelAuth.accessToken);
+              outcome = await runGeneration(true);
+            } else {
+              throw error;
+            }
+          }
+
+          const { resolved, imageBytes, mediaType } = outcome;
           if (!imageBytes || imageBytes.byteLength === 0) {
             return {
               ok: false,
@@ -654,81 +694,61 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
           };
         }
       },
+      toModelOutput: ({ output }) => {
+        if (!output.ok) {
+          return {
+            type: 'json',
+            value: {
+              ok: false,
+              error: output.error ?? 'Image generation failed.',
+              modelId: output.modelId ?? null,
+              billingSource: output.billingSource ?? null,
+            },
+          };
+        }
+
+        return {
+          type: 'json',
+          value: {
+            ok: true,
+            url: output.url?.startsWith('data:')
+              ? '[inline generated image rendered directly in UI; base64 omitted from model context]'
+              : (output.url ?? null),
+            mediaType: output.mediaType ?? 'image/png',
+            storage: output.storage ?? 'data-url',
+            prompt: output.prompt ?? '',
+            aspectRatio: output.aspectRatio ?? '1:1',
+            modelId: output.modelId ?? null,
+            billingSource: output.billingSource ?? null,
+          },
+        };
+      },
     }),
 
     /* ---------------------------------------------------------------------- */
-    /* Safe Web Fetch (Read-only documentation / page text retrieval)         */
+    /* Safe Web Fetch (DNS SSRF-protected + bounded 512 KB streaming read)    */
     /* ---------------------------------------------------------------------- */
     web_fetch: tool({
       description:
-        'Fetch a public HTTP/HTTPS URL and extract clean readable text/markdown (bounded length, SSRF-protected).',
+        'Fetch a public HTTP/HTTPS URL and extract clean readable text/markdown (DNS SSRF-protected, manual redirect validation, 512 KB streaming cap).',
       inputSchema: z.object({
         url: z.string().min(1).describe('Public http:// or https:// URL to fetch'),
         maxChars: z.number().int().min(500).max(24_000).default(12_000),
       }),
       execute: async ({ url, maxChars }) => {
-        let currentUrl: URL;
         try {
-          currentUrl = validateExternalUrl(url);
-        } catch (error) {
-          return {
-            ok: false,
-            url,
-            error: error instanceof Error ? error.message : 'Invalid or restricted URL.',
-          };
-        }
+          const { response, finalUrl } = await safeExternalFetch(url, {
+            method: 'GET',
+            headers: {
+              'User-Agent': 'MinimalADE/1.0 (+https://github.com/markeljan/minimal-ade)',
+              Accept: 'text/html, text/plain, text/markdown, application/json;q=0.9',
+            },
+            maxRedirects: 5,
+            timeoutMs: 10_000,
+          });
 
-        try {
-          const MAX_REDIRECTS = 5;
-          let response: Response | null = null;
-
-          for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-            response = await fetch(currentUrl.toString(), {
-              method: 'GET',
-              redirect: 'manual',
-              headers: {
-                'User-Agent': 'MinimalADE/1.0 (+https://github.com/markeljan/minimal-ade)',
-                Accept: 'text/html, text/plain, text/markdown, application/json;q=0.9',
-              },
-              signal: AbortSignal.timeout(10_000),
-            });
-
-            if (response.status >= 300 && response.status < 400) {
-              const location = response.headers.get('location');
-              if (!location) {
-                break;
-              }
-              if (hop === MAX_REDIRECTS) {
-                return {
-                  ok: false,
-                  url: currentUrl.toString(),
-                  error: 'Too many redirects while fetching URL.',
-                };
-              }
-              try {
-                const nextUrl = new URL(location, currentUrl);
-                currentUrl = validateExternalUrl(nextUrl.toString());
-              } catch (redirectErr) {
-                return {
-                  ok: false,
-                  url: currentUrl.toString(),
-                  error:
-                    redirectErr instanceof Error
-                      ? redirectErr.message
-                      : 'Redirect target is invalid or restricted.',
-                };
-              }
-              continue;
-            }
-            break;
-          }
-
-          if (!response) {
-            return { ok: false, url: currentUrl.toString(), error: 'Empty fetch response.' };
-          }
-
-          const finalUrl = response.url || currentUrl.toString();
           if (!response.ok) {
+            await response.body?.cancel().catch(() => undefined);
             return {
               ok: false,
               url: finalUrl,
@@ -738,7 +758,7 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
           }
 
           const contentType = response.headers.get('content-type') ?? '';
-          const rawText = (await response.text()).slice(0, 200_000);
+          const rawText = await readResponseTextBounded(response, MAX_WEB_FETCH_BYTES);
 
           if (
             contentType.includes('text/html') ||
@@ -767,7 +787,7 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
         } catch (error) {
           return {
             ok: false,
-            url: currentUrl.toString(),
+            url,
             error: error instanceof Error ? error.message : 'Network fetch failed.',
           };
         }
@@ -792,7 +812,7 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
 
     coreTools.ui_act = tool({
       description:
-        'Operate Minimal ADE UI controls directly via @ui-sdk/react/agent (switch theme/palette, open/switch Workbench tabs, change model/harness, navigate embedded browser, toggle sidebar, open settings/command palette). Always requires explicit human approval.',
+        'Operate Minimal ADE UI controls directly via @ui-sdk/react/agent (switch theme/palette, open/switch Workbench tabs, change model/harness, navigate embedded browser, toggle sidebar, open settings/command palette). Respects Sentinel human-in-the-loop approval preference.',
       inputSchema: z.object({
         reason: z
           .string()
@@ -813,7 +833,7 @@ export async function createAdeTools(options: CreateAdeToolsOptions): Promise<To
           .min(1)
           .max(8),
       }),
-      needsApproval: true,
+      needsApproval: uiActRequireApproval,
     });
   }
 

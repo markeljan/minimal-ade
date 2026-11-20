@@ -258,6 +258,8 @@ function buildCoreAdeTargets(state: UiAgentControllerBindings): UiAgentComponent
   ];
 }
 
+const UI_BRIDGE_APPROVAL_STORAGE_KEY = 'ade:ui-bridge:require-approval';
+
 export function UiAgentProvider({ children }: { children: React.ReactNode }) {
   const bindingsRef = React.useRef<UiAgentControllerBindings>({});
   const requireApprovalRef = React.useRef<boolean>(true);
@@ -268,9 +270,39 @@ export function UiAgentProvider({ children }: { children: React.ReactNode }) {
   const [auditLog, setAuditLog] = React.useState<UiAgentAuditEntry[]>([]);
   const [version, setVersion] = React.useState(0);
 
+  // Hydrate persisted requireApproval preference after mount (defaults safely to true)
+  React.useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(UI_BRIDGE_APPROVAL_STORAGE_KEY);
+      if (saved === 'false') {
+        requireApprovalRef.current = false;
+        setRequireApprovalState(false);
+      } else if (saved === 'true') {
+        requireApprovalRef.current = true;
+        setRequireApprovalState(true);
+      }
+    } catch {
+      // Ignore storage access errors in restricted contexts
+    }
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== UI_BRIDGE_APPROVAL_STORAGE_KEY) return;
+      const next = event.newValue !== 'false';
+      requireApprovalRef.current = next;
+      setRequireApprovalState(next);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const setRequireApproval = React.useCallback((next: boolean) => {
     requireApprovalRef.current = next;
     setRequireApprovalState(next);
+    try {
+      window.localStorage.setItem(UI_BRIDGE_APPROVAL_STORAGE_KEY, String(next));
+    } catch {
+      // Ignore storage write errors
+    }
   }, []);
 
   const appendAudit = React.useCallback((entry: Omit<UiAgentAuditEntry, 'id' | 'timestamp'>) => {

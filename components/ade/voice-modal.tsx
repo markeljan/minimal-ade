@@ -1,6 +1,7 @@
 'use client';
 
 import { gateway } from '@ai-sdk/gateway';
+import { openai } from '@ai-sdk/openai';
 import { experimental_useRealtime } from '@ai-sdk/react';
 import {
   AudioLines,
@@ -16,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { ClientProviderSettings } from '@/components/ade/settings-dialog';
+import { REALTIME_MODEL_ID } from '@/lib/ai/models';
 import { cn } from '@/lib/utils';
 
 export interface VoiceModalProps {
@@ -74,7 +76,23 @@ interface BrowserSpeechRecognition {
   stop: () => void;
 }
 
-const GATEWAY_REALTIME_MODEL = gateway.experimental_realtime('openai/gpt-realtime-2');
+interface ActiveRealtimeConnection {
+  key: number;
+  transport: 'gateway' | 'openai';
+  modelId: string;
+  websocket: string;
+  protocols?: string[];
+}
+
+function createClientRealtimeModel(transport: 'gateway' | 'openai', resolvedModelId: string) {
+  if (transport === 'openai') {
+    const cleanModel = resolvedModelId.replace(/^openai\//i, '') || 'gpt-realtime';
+    return openai.experimental_realtime(cleanModel);
+  }
+  return gateway.experimental_realtime(resolvedModelId || REALTIME_MODEL_ID);
+}
+
+const DEFAULT_GATEWAY_REALTIME_MODEL = gateway.experimental_realtime(REALTIME_MODEL_ID);
 
 const REALTIME_SESSION_CONFIG = {
   instructions:
@@ -88,11 +106,13 @@ export function VoiceModal({
   modelId,
   providerSettings,
 }: VoiceModalProps) {
+  const effectiveModelId = modelId?.trim() || REALTIME_MODEL_ID;
   const providerOverride = useMemo(
     () => buildVoiceProviderOverride(providerSettings),
     [providerSettings],
   );
   const [mode, setMode] = useState<'realtime' | 'fallback'>('realtime');
+  const [activeConn, setActiveConn] = useState<ActiveRealtimeConnection | null>(null);
   const [muted, setMuted] = useState(false);
   const [pushToTalk, setPushToTalk] = useState(false);
   const [pttHeld, setPttHeld] = useState(false);
@@ -106,10 +126,24 @@ export function VoiceModal({
 
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const pendingConnectKeyRef = useRef<number | null>(null);
+
+  const realtimeModel = useMemo(() => {
+    if (!activeConn) return DEFAULT_GATEWAY_REALTIME_MODEL;
+    return createClientRealtimeModel(activeConn.transport, activeConn.modelId);
+  }, [activeConn]);
+
+  const realtimeApi = useMemo(
+    () =>
+      activeConn
+        ? { websocket: activeConn.websocket, protocols: activeConn.protocols }
+        : { token: '/api/realtime/token' },
+    [activeConn],
+  );
 
   const realtime = experimental_useRealtime({
-    model: GATEWAY_REALTIME_MODEL,
-    api: { token: '/api/realtime/token' },
+    model: realtimeModel,
+    api: realtimeApi,
     sessionConfig: REALTIME_SESSION_CONFIG,
     onError: (err) => {
       setMode('fallback');
@@ -289,20 +323,44 @@ export function VoiceModal({
     setStatusHint('Listening via Web Speech fallback…');
   }, [pushToTalk, speakAssistantReply, stopFallbackSpeech]);
 
+  const realtimeConnectRef = useRef(realtime.connect);
+  realtimeConnectRef.current = realtime.connect;
+  const startFallbackListeningRef = useRef(startFallbackListening);
+  startFallbackListeningRef.current = startFallbackListening;
+
+  // Connect once useRealtime has initialized the matching transport/model store
+  useEffect(() => {
+    if (!activeConn || pendingConnectKeyRef.current !== activeConn.key) return;
+    pendingConnectKeyRef.current = null;
+    void realtimeConnectRef
+      .current()
+      .then(() => {
+        setStatusHint(
+          `Live Realtime audio connected (${activeConn.transport === 'openai' ? 'OpenAI Direct' : 'AI Gateway'} · ${activeConn.modelId}).`,
+        );
+      })
+      .catch(() => {
+        setMode('fallback');
+        setStatusHint(
+          'Realtime connection unavailable — running in local Web Speech + TTS fallback.',
+        );
+        startFallbackListeningRef.current();
+      });
+  }, [activeConn]);
+
   const handleConnect = async () => {
     setMode('realtime');
     setStatusHint('Requesting ephemeral realtime token…');
     try {
-      const probe = await fetch('/api/realtime/token', {
+      const tokenRes = await fetch('/api/realtime/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          probe: true,
-          ...(modelId ? { modelId } : {}),
+          modelId: effectiveModelId,
           ...(providerOverride ? { providerOverride } : {}),
         }),
       });
-      if (!probe.ok) {
+      if (!tokenRes.ok) {
         setMode('fallback');
         setStatusHint(
           'Realtime token not configured — switched seamlessly to Web Speech + TTS mode.',
@@ -310,14 +368,71 @@ export function VoiceModal({
         startFallbackListening();
         return;
       }
-      await realtime.connect();
-      setStatusHint('Live Realtime audio connected.');
+
+      const data = (await tokenRes.json()) as {
+        supported?: boolean;
+        transport?: 'gateway' | 'openai' | 'unsupported';
+        token?: string;
+        url?: string;
+        modelId?: string;
+        reason?: string;
+      };
+
+      if (
+        !data.supported ||
+        !data.token ||
+        !data.url ||
+        (data.transport !== 'gateway' && data.transport !== 'openai')
+      ) {
+        setMode('fallback');
+        setStatusHint(
+          data.reason ||
+            'Realtime voice unavailable for this provider — switched to Web Speech + TTS mode.',
+        );
+        startFallbackListening();
+        return;
+      }
+
+      const resolvedModelId =
+        data.modelId || (data.transport === 'openai' ? 'gpt-realtime' : effectiveModelId);
+      const clientModel = createClientRealtimeModel(data.transport, resolvedModelId);
+      const wsConfig = clientModel.getWebSocketConfig?.({
+        token: data.token,
+        url: data.url,
+      });
+
+      if (!wsConfig?.url) {
+        throw new Error('Realtime model failed to produce a WebSocket configuration.');
+      }
+
+      const key = Date.now();
+      pendingConnectKeyRef.current = key;
+      setActiveConn({
+        key,
+        transport: data.transport,
+        modelId: resolvedModelId,
+        websocket: wsConfig.url,
+        protocols: wsConfig.protocols,
+      });
+      setStatusHint('Connecting to live realtime audio stream…');
     } catch {
       setMode('fallback');
       setStatusHint(
         'Realtime connection unavailable — running in local Web Speech + TTS fallback.',
       );
       startFallbackListening();
+    }
+  };
+
+  const releasePushToTalk = () => {
+    if (!pttHeld) return;
+    setPttHeld(false);
+    if (mode === 'fallback') {
+      stopFallbackSpeech();
+    } else if (realtime.status === 'connected') {
+      realtime.stopAudioCapture();
+      realtime.commitAudio();
+      realtime.requestResponse();
     }
   };
 
@@ -525,21 +640,17 @@ export function VoiceModal({
                   void realtime.resumeAudioCapture();
                 }
               }}
-              onMouseUp={() => {
-                setPttHeld(false);
-                if (mode === 'fallback') stopFallbackSpeech();
+              onMouseUp={releasePushToTalk}
+              onMouseLeave={releasePushToTalk}
+              onTouchStart={() => {
+                setPttHeld(true);
+                if (mode === 'fallback') startFallbackListening();
                 else if (realtime.status === 'connected') {
-                  realtime.stopAudioCapture();
-                  realtime.commitAudio();
-                  realtime.requestResponse();
+                  void realtime.resumeAudioCapture();
                 }
               }}
-              onMouseLeave={() => {
-                if (pttHeld) {
-                  setPttHeld(false);
-                  if (mode === 'fallback') stopFallbackSpeech();
-                }
-              }}
+              onTouchEnd={releasePushToTalk}
+              onTouchCancel={releasePushToTalk}
               className={cn(
                 'mt-3 rounded-full px-5 py-2 text-xs font-medium transition-colors select-none',
                 pttHeld

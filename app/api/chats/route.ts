@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getServerSession } from '@/lib/auth/session';
-import { createChat, listChats } from '@/lib/db/queries';
+import { ChatAlreadyExistsError, createChat, listChats } from '@/lib/db/queries';
 
 const createChatSchema = z.object({
   id: z.string().min(1).max(128).optional(),
@@ -58,6 +58,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ chat }, { status: 201 });
   } catch (error) {
+    if (error instanceof ChatAlreadyExistsError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     const message = error instanceof Error ? error.message : 'Failed to create chat';
     return NextResponse.json({ error: message }, { status: 500 });
   }

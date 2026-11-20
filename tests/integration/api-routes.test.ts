@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { GET as getResumeStream } from '@/app/api/chat/[id]/stream/route';
+import { POST as rewindChatRoute } from '@/app/api/chats/[id]/rewind/route';
 import { POST as createChatRoute, GET as listChatsRoute } from '@/app/api/chats/route';
 import { POST as mcpRoute } from '@/app/api/mcp/route';
 import {
@@ -17,7 +18,13 @@ import {
 } from '@/app/api/sandbox/files/route';
 import { POST as postRelayGrantRoute } from '@/app/api/sandbox/relay-grant/route';
 import { GET as getSandboxRoute, POST as postSandboxRoute } from '@/app/api/sandbox/route';
+import { POST as postUploadRoute } from '@/app/api/upload/route';
+import {
+  DELETE as deleteWorkflowRunRoute,
+  GET as getWorkflowRunRoute,
+} from '@/app/api/workflow/[runId]/route';
 import type { LocalStoreData } from '@/lib/db/local-store';
+import { createChat, saveMessages } from '@/lib/db/queries';
 import { registerWorkspacePersistence } from '@/lib/sandbox/manager';
 
 interface GlobalLocalStoreState {
@@ -196,6 +203,55 @@ describe('Next.js API route handler integration smoke tests', () => {
       }),
     );
     expect(invalidRes.status).toBe(400);
+
+    // Duplicate explicit ID MUST return 409 Conflict
+    const dupRes = await createChatRoute(
+      new Request('http://localhost:3000/api/chats', {
+        method: 'POST',
+        headers: guestHeaders,
+        body: JSON.stringify({ id: created.chat.id, title: 'Duplicate' }),
+      }),
+    );
+    expect(dupRes.status).toBe(409);
+
+    // Server Rewind route persists message truncation for owner and blocks foreign users (403)
+    await saveMessages(created.chat.id, [
+      {
+        id: 'rw-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'First' }],
+        createdAt: new Date('2026-11-19T12:00:00Z'),
+      },
+      {
+        id: 'rw-2',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Second' }],
+        createdAt: new Date('2026-11-19T12:00:01Z'),
+      },
+    ]);
+
+    const foreignRewind = await rewindChatRoute(
+      new Request(`http://localhost:3000/api/chats/${created.chat.id}/rewind`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-ade-guest-id': 'guest_other_user_99' },
+        body: JSON.stringify({ messageId: 'rw-1' }),
+      }),
+      { params: Promise.resolve({ id: created.chat.id }) },
+    );
+    expect(foreignRewind.status).toBe(403);
+
+    const ownerRewind = await rewindChatRoute(
+      new Request(`http://localhost:3000/api/chats/${created.chat.id}/rewind`, {
+        method: 'POST',
+        headers: guestHeaders,
+        body: JSON.stringify({ messageId: 'rw-1', inclusive: false }),
+      }),
+      { params: Promise.resolve({ id: created.chat.id }) },
+    );
+    expect(ownerRewind.status).toBe(200);
+    const rewound = (await ownerRewind.json()) as { rewound: boolean; deletedCount: number };
+    expect(rewound.rewound).toBe(true);
+    expect(rewound.deletedCount).toBe(1);
   });
 
   it('/api/sandbox returns status, starter files, and validates actions', async () => {
@@ -234,6 +290,16 @@ describe('Next.js API route handler integration smoke tests', () => {
       }),
     );
     expect(badRes.status).toBe(400);
+
+    // Host-billed Tier 2 cloud upgrade rejects unowned/nonexistent chatId with 403
+    const unownedUpgradeRes = await postSandboxRoute(
+      new Request('http://localhost:3000/api/sandbox', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-ade-guest-id': 'guest_unowned_1' },
+        body: JSON.stringify({ chatId: 'nonexistent-chat-id', action: 'upgrade' }),
+      }),
+    );
+    expect(unownedUpgradeRes.status).toBe(403);
   });
 
   it('/api/sandbox/exec executes shell commands and syncs file changes', async () => {
@@ -351,7 +417,7 @@ describe('Next.js API route handler integration smoke tests', () => {
     expect(res.status).toBe(204);
   });
 
-  it('/api/mcp responds to Streamable HTTP tools/list with 200 OK', async () => {
+  it('/api/mcp responds to Streamable HTTP tools/list with 200 OK and blocks unauthenticated mutations on foreign public chats', async () => {
     const res = await mcpRoute(
       new Request('http://localhost:3000/api/mcp', {
         method: 'POST',
@@ -371,5 +437,90 @@ describe('Next.js API route handler integration smoke tests', () => {
     const payload = await parseMcpBody(res);
     const tools = (payload.result as { tools?: Array<{ name: string }> } | undefined)?.tools ?? [];
     expect(tools.length).toBe(5);
+
+    // Create a public chat owned by another user and verify unauthenticated MCP write fails closed
+    const publicChat = await createChat({
+      id: 'chat-public-victim',
+      userId: 'owner_user_1',
+      title: 'Public Showcase Chat',
+      visibility: 'public',
+    });
+
+    const writeRes = await mcpRoute(
+      new Request('http://localhost:3000/api/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'x-ade-guest-id': 'guest_attacker_2',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 11,
+          method: 'tools/call',
+          params: {
+            name: 'workspace_write_file',
+            arguments: {
+              chatId: publicChat.id,
+              path: 'pwned.txt',
+              content: 'unauthorized write',
+            },
+          },
+        }),
+      }),
+    );
+    expect(writeRes.status).toBe(200);
+    const writePayload = await parseMcpBody(writeRes);
+    const writeResult = writePayload.result as { isError?: boolean };
+    expect(writeResult.isError).toBe(true);
+  });
+
+  it('/api/upload rejects active HTML and SVG uploads with HTTP 415', async () => {
+    const htmlForm = new FormData();
+    htmlForm.append(
+      'file',
+      new File(['<script>alert(1)</script>'], 'xss.html', { type: 'text/html' }),
+    );
+    const htmlRes = await postUploadRoute(
+      new Request('http://localhost:3000/api/upload', {
+        method: 'POST',
+        headers: { 'x-ade-guest-id': 'guest_upload_1' },
+        body: htmlForm,
+      }),
+    );
+    expect(htmlRes.status).toBe(415);
+
+    const svgForm = new FormData();
+    svgForm.append(
+      'file',
+      new File(['<svg onload="alert(1)"/>'], 'vector.svg', { type: 'image/svg+xml' }),
+    );
+    const svgRes = await postUploadRoute(
+      new Request('http://localhost:3000/api/upload', {
+        method: 'POST',
+        headers: { 'x-ade-guest-id': 'guest_upload_1' },
+        body: svgForm,
+      }),
+    );
+    expect(svgRes.status).toBe(415);
+  });
+
+  it('/api/workflow/[runId] blocks unauthorized GET and DELETE with HTTP 403', async () => {
+    const getRes = await getWorkflowRunRoute(
+      new Request('http://localhost:3000/api/workflow/nonexistent-run', {
+        headers: { 'x-ade-guest-id': 'guest_wf_unauth' },
+      }),
+      { params: Promise.resolve({ runId: 'nonexistent-run' }) },
+    );
+    expect(getRes.status).toBe(403);
+
+    const delRes = await deleteWorkflowRunRoute(
+      new Request('http://localhost:3000/api/workflow/nonexistent-run', {
+        method: 'DELETE',
+        headers: { 'x-ade-guest-id': 'guest_wf_unauth' },
+      }),
+      { params: Promise.resolve({ runId: 'nonexistent-run' }) },
+    );
+    expect(delRes.status).toBe(403);
   });
 });

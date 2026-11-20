@@ -66,6 +66,7 @@ function buildUserVercelAuth(session: ServerSession | null): UserVercelAuth | nu
     accessToken,
     refreshToken,
     expiresAt,
+    providerId,
     onRefreshed: async (refreshed) => {
       await updateVercelTokens(session.userId, {
         accessToken: refreshed.accessToken,

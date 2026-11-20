@@ -11,6 +11,7 @@ import {
   type FxAgentHostTool,
   type FxCustomProviderDefinition,
   type FxFetch,
+  type FxSessionPromptInput,
   type FxSessionTurnEvent,
   type FxToolContext,
   type FxTurnResult,
@@ -21,8 +22,14 @@ import { z } from 'zod';
 import type { ResolvedFxCredentials } from '@/lib/ai/provider';
 import { buildFxSystemPrompt } from '@/lib/ai/system-prompt';
 import { isDestructiveCommand } from '@/lib/ai/tools/index';
-import { saveArtifact } from '@/lib/db/queries';
-import { execCommand, listFiles, readFile, writeFile } from '@/lib/sandbox/manager';
+import { saveArtifact, syncWorkspaceFiles } from '@/lib/db/queries';
+import {
+  execCommand,
+  getAllFilesRecord,
+  listFiles,
+  readFile,
+  writeFile,
+} from '@/lib/sandbox/manager';
 import type { SandboxTier } from '@/lib/types';
 
 export const MAX_TURN_MODEL_STEPS = 64;
@@ -54,11 +61,9 @@ function getLeaseStorage(): AsyncLocalStorage<TurnCredentialLease> {
 /**
  * Custom `fx0`-style fetch wrapper injecting per-turn resolved 5-tier credentials
  * via `AsyncLocalStorage` (zero cross-tenant races, zero secrets persisted in libfx journals)
- * and enforcing the `MAX_TURN_MODEL_STEPS` cross-turn model step budget.
+ * and enforcing the `MAX_TURN_MODEL_STEPS` per-turn / per-wake-request model step budget.
  */
 function createCredentialAndBudgetFetch(fallbackCreds?: ResolvedFxCredentials): FxFetch {
-  let localSteps = 0;
-
   return async (input: string, init: RequestInit): Promise<Response> => {
     const isModelPost =
       (init.method ?? 'GET').toUpperCase() === 'POST' &&
@@ -68,17 +73,10 @@ function createCredentialAndBudgetFetch(fallbackCreds?: ResolvedFxCredentials): 
 
     const activeLease = getLeaseStorage().getStore();
 
-    if (isModelPost) {
-      if (activeLease) {
-        activeLease.steps += 1;
-        if (activeLease.steps > MAX_TURN_MODEL_STEPS) {
-          throw new Error(`fx turn exceeded model step budget (${MAX_TURN_MODEL_STEPS} steps).`);
-        }
-      } else {
-        localSteps += 1;
-        if (localSteps > MAX_TURN_MODEL_STEPS) {
-          throw new Error(`fx turn exceeded model step budget (${MAX_TURN_MODEL_STEPS} steps).`);
-        }
+    if (isModelPost && activeLease) {
+      activeLease.steps += 1;
+      if (activeLease.steps > MAX_TURN_MODEL_STEPS) {
+        throw new Error(`fx turn exceeded model step budget (${MAX_TURN_MODEL_STEPS} steps).`);
       }
     }
 
@@ -115,6 +113,15 @@ function extractSessionContext(ctx: FxToolContext): FxToolSessionContext {
         ? raw.sandboxTier
         : undefined,
   };
+}
+
+async function persistWorkspaceSnapshot(chatId: string, sandboxTier?: SandboxTier): Promise<void> {
+  try {
+    const allFiles = await getAllFilesRecord(chatId, sandboxTier);
+    await syncWorkspaceFiles(chatId, allFiles, { pruneMissing: true });
+  } catch {
+    // Best-effort sync; in-memory workspace state remains authoritative for active turn.
+  }
 }
 
 /**
@@ -187,6 +194,7 @@ export function createFxHostCodingTools(): readonly FxAgentHostTool[] {
       execute: async (input: { path: string; content: string }, context) => {
         const { chatId, sandboxTier } = extractSessionContext(context);
         const res = await writeFile(chatId, input.path, input.content, sandboxTier);
+        await persistWorkspaceSnapshot(chatId, sandboxTier);
         return {
           ok: true,
           path: res.path,
@@ -223,6 +231,7 @@ export function createFxHostCodingTools(): readonly FxAgentHostTool[] {
         }
         const updated = current.content.replace(input.target, input.replacement);
         const res = await writeFile(chatId, input.path, updated, sandboxTier);
+        await persistWorkspaceSnapshot(chatId, sandboxTier);
         return {
           ok: true,
           path: res.path,
@@ -235,7 +244,7 @@ export function createFxHostCodingTools(): readonly FxAgentHostTool[] {
     {
       name: 'shell',
       description:
-        'Execute a shell command in the session workspace (Tier 1 just-bash or Tier 2 Vercel Sandbox). Destructive commands are refused in unattended durable runs.',
+        'Execute a shell command in the session workspace (Tier 1 just-bash or Tier 2 Vercel Sandbox). Destructive commands are refused by Sentinel in unattended durable runs.',
       idempotent: false,
       writes: true,
       inputSchema: {
@@ -252,7 +261,7 @@ export function createFxHostCodingTools(): readonly FxAgentHostTool[] {
           return {
             ok: false,
             blocked: true,
-            error: `Sentinel blocked destructive command "${input.command}" inside autonomous fx run.`,
+            error: `Sentinel blocked destructive command "${input.command}" inside autonomous fx run. Switch to AI SDK 7 mode for interactive Sentinel approval.`,
           };
         }
         const { chatId, sandboxTier } = extractSessionContext(context);
@@ -261,6 +270,9 @@ export function createFxHostCodingTools(): readonly FxAgentHostTool[] {
           tier: sandboxTier,
           signal: context.signal,
         });
+        if (res.changedFiles.length > 0 || res.deletedFiles.length > 0) {
+          await persistWorkspaceSnapshot(chatId, sandboxTier);
+        }
         return {
           ok: res.exitCode === 0,
           exitCode: res.exitCode,
@@ -269,6 +281,7 @@ export function createFxHostCodingTools(): readonly FxAgentHostTool[] {
           stdout: res.stdout.slice(0, 24_000),
           stderr: res.stderr.slice(0, 12_000),
           changedFiles: res.changedFiles,
+          deletedFiles: res.deletedFiles,
           workbenchTab: 'terminal',
         };
       },
@@ -293,6 +306,7 @@ export function createFxHostCodingTools(): readonly FxAgentHostTool[] {
         const { chatId, userId, sandboxTier } = extractSessionContext(context);
         const targetPath = input.path?.trim() || 'index.html';
         await writeFile(chatId, targetPath, input.html, sandboxTier);
+        await persistWorkspaceSnapshot(chatId, sandboxTier);
         const artifact = await saveArtifact({
           chatId,
           userId,
@@ -351,6 +365,7 @@ export function createFxFallbackAiTools(context: FxToolSessionContext): ToolSet 
       inputSchema: z.object({ path: z.string().min(1), content: z.string() }),
       execute: async ({ path: filePath, content }) => {
         const res = await writeFile(chatId, filePath, content, sandboxTier);
+        await persistWorkspaceSnapshot(chatId, sandboxTier);
         return {
           ok: true,
           path: res.path,
@@ -375,6 +390,7 @@ export function createFxFallbackAiTools(context: FxToolSessionContext): ToolSet 
         }
         const updated = current.content.replace(target, replacement);
         const res = await writeFile(chatId, filePath, updated, sandboxTier);
+        await persistWorkspaceSnapshot(chatId, sandboxTier);
         return { ok: true, path: res.path, size: res.size, tier: res.tier, workbenchTab: 'files' };
       },
     }),
@@ -387,6 +403,9 @@ export function createFxFallbackAiTools(context: FxToolSessionContext): ToolSet 
       needsApproval: ({ command }) => isDestructiveCommand(command),
       execute: async ({ command, cwd }) => {
         const res = await execCommand(chatId, command, { cwd, tier: sandboxTier });
+        if (res.changedFiles.length > 0 || res.deletedFiles.length > 0) {
+          await persistWorkspaceSnapshot(chatId, sandboxTier);
+        }
         return {
           ok: res.exitCode === 0,
           exitCode: res.exitCode,
@@ -395,6 +414,7 @@ export function createFxFallbackAiTools(context: FxToolSessionContext): ToolSet 
           stdout: res.stdout.slice(0, 24_000),
           stderr: res.stderr.slice(0, 12_000),
           changedFiles: res.changedFiles,
+          deletedFiles: res.deletedFiles,
           workbenchTab: 'terminal',
         };
       },
@@ -410,6 +430,7 @@ export function createFxFallbackAiTools(context: FxToolSessionContext): ToolSet 
       execute: async ({ title, html, path: filePath }) => {
         const targetPath = filePath?.trim() || 'index.html';
         await writeFile(chatId, targetPath, html, sandboxTier);
+        await persistWorkspaceSnapshot(chatId, sandboxTier);
         const artifact = await saveArtifact({
           chatId,
           userId,
@@ -440,12 +461,20 @@ function selectDurability(): Durability {
 
 /**
  * Returns the singleton durable `libfx` Gateway agent registered in this server process.
- * Used both by interactive `/api/chat/fx` turns and the Vercel Queue wake handler (`/api/libfx`).
+ * Passes a non-empty placeholder `apiKey` when host Gateway env vars are absent so `libfx`
+ * never throws `TypeError` before our per-turn `AsyncLocalStorage` `fetch` injects Tier 2a/2b
+ * user credentials.
  */
 export function getFxAgent(): FxAgent {
   if (!globalFxState.__minimalAdeFxAgent) {
+    const bootstrapApiKey =
+      process.env.AI_GATEWAY_API_KEY?.trim() ||
+      process.env.VERCEL_OIDC_TOKEN?.trim() ||
+      'fx-per-turn-injected';
+
     globalFxState.__minimalAdeFxAgent = createFxAgent({
       name: 'minimal-ade-fx',
+      apiKey: bootstrapApiKey,
       durability: selectDurability(),
       instructions: buildFxSystemPrompt(),
       tools: createFxHostCodingTools(),
@@ -457,19 +486,28 @@ export function getFxAgent(): FxAgent {
 
 /**
  * Returns the Vercel Fluid Compute / Queue wake handler for `app/api/libfx/route.ts`.
- * Ensures the durable `minimal-ade-fx` agent is registered before dispatching queue deliveries.
+ * Wraps each queue delivery in an isolated `AsyncLocalStorage` step budget so cumulative
+ * wake calls can never permanently exhaust the 64-step limit.
  */
 export function getFxWakeHandler(): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
     const agent = getFxAgent();
-    return agent.wakeHandler()(request);
+    const wakeLease: TurnCredentialLease = {
+      apiKey:
+        process.env.AI_GATEWAY_API_KEY?.trim() ||
+        process.env.VERCEL_OIDC_TOKEN?.trim() ||
+        undefined,
+      headers: {},
+      steps: 0,
+    };
+    return getLeaseStorage().run(wakeLease, () => agent.wakeHandler()(request));
   };
 }
 
 export interface RunFxTurnOptions {
   chatId: string;
   userId: string;
-  prompt: string;
+  prompt: FxSessionPromptInput;
   credentials: ResolvedFxCredentials;
   sandboxTier?: SandboxTier;
   workspaceFiles?: string[];
@@ -487,8 +525,8 @@ export interface RunFxTurnOutcome {
  * - The durable Vercel/local `FxAgent` (for Vercel AI Gateway credentials), or
  * - An ephemeral `FxCustomProvider` `FxAgent` (for direct OpenAI / custom OpenAI-compatible endpoints).
  *
- * Credentials are bound strictly via `AsyncLocalStorage` per turn so concurrent requests
- * can never observe or overwrite another tenant's credentials.
+ * Credentials & step budgets are bound strictly via `AsyncLocalStorage` per turn so concurrent
+ * requests can never observe or overwrite another tenant's credentials.
  */
 export async function runFxTurn(options: RunFxTurnOptions): Promise<RunFxTurnOutcome> {
   const { chatId, userId, prompt, credentials, sandboxTier, workspaceFiles, signal, onEvent } =
@@ -511,68 +549,73 @@ export async function runFxTurn(options: RunFxTurnOptions): Promise<RunFxTurnOut
   };
 
   return getLeaseStorage().run(lease, async () => {
-    if (credentials.mode === 'gateway') {
-      const agent = getFxAgent();
-      const session = agent.session(sanitizedSessionId, {
-        model: credentials.modelId,
-        instructions,
-        context: {
-          chatId,
-          userId,
-          ...(sandboxTier ? { sandboxTier } : {}),
-        },
-      });
-
-      const turn = session.prompt(prompt, { signal });
-      for await (const event of turn) {
-        onEvent(event);
-      }
-      const result = await turn.result;
-      return { transport: 'libfx-durable', result };
-    }
-
-    // OpenAI or Custom OpenAI-compatible provider via libfx FxCustomProvider.
-    const customProviderDef: FxCustomProviderDefinition = {
-      name: credentials.mode === 'openai' ? 'ade-openai' : 'ade-custom',
-      baseUrl: credentials.baseUrl,
-      modelDefaults: {
-        supportsToolUse: true,
-        supportsVision: true,
-        outputLimitField: credentials.mode === 'openai' ? 'max_completion_tokens' : 'max_tokens',
-      },
-    };
-
-    const ephemeralAgent = createFxAgent({
-      name: 'minimal-ade-fx-custom',
-      durability: memory({ reserveMs: 30_000 }),
-      provider: customProviderDef,
-      model: credentials.modelId,
-      credentials: credentials.apiKey
-        ? () => ({ apiKey: credentials.apiKey as string })
-        : undefined,
-      instructions,
-      tools: createFxHostCodingTools(),
-      fetch: createCredentialAndBudgetFetch(credentials),
-    });
-
     try {
-      const session = ephemeralAgent.session(sanitizedSessionId, {
-        model: credentials.modelId,
-        instructions,
-        context: {
-          chatId,
-          userId,
-          ...(sandboxTier ? { sandboxTier } : {}),
-        },
-      });
-      const turn = session.prompt(prompt, { signal });
-      for await (const event of turn) {
-        onEvent(event);
+      if (credentials.mode === 'gateway') {
+        const agent = getFxAgent();
+        const session = agent.session(sanitizedSessionId, {
+          model: credentials.modelId,
+          instructions,
+          context: {
+            chatId,
+            userId,
+            ...(sandboxTier ? { sandboxTier } : {}),
+          },
+        });
+
+        const turn = session.prompt(prompt, { signal });
+        for await (const event of turn) {
+          onEvent(event);
+        }
+        const result = await turn.result;
+        return { transport: 'libfx-durable', result };
       }
-      const result = await turn.result;
-      return { transport: 'libfx-custom', result };
+
+      // OpenAI or Custom OpenAI-compatible provider via libfx FxCustomProvider.
+      const customProviderDef: FxCustomProviderDefinition = {
+        name: credentials.mode === 'openai' ? 'ade-openai' : 'ade-custom',
+        baseUrl: credentials.baseUrl,
+        modelDefaults: {
+          supportsToolUse: true,
+          supportsVision: true,
+          outputLimitField: credentials.mode === 'openai' ? 'max_completion_tokens' : 'max_tokens',
+        },
+      };
+
+      const ephemeralAgent = createFxAgent({
+        name: 'minimal-ade-fx-custom',
+        durability: memory({ reserveMs: 30_000 }),
+        provider: customProviderDef,
+        model: credentials.modelId,
+        credentials: credentials.apiKey
+          ? () => ({ apiKey: credentials.apiKey as string })
+          : undefined,
+        instructions,
+        tools: createFxHostCodingTools(),
+        fetch: createCredentialAndBudgetFetch(credentials),
+      });
+
+      try {
+        const session = ephemeralAgent.session(sanitizedSessionId, {
+          model: credentials.modelId,
+          instructions,
+          context: {
+            chatId,
+            userId,
+            ...(sandboxTier ? { sandboxTier } : {}),
+          },
+        });
+        const turn = session.prompt(prompt, { signal });
+        for await (const event of turn) {
+          onEvent(event);
+        }
+        const result = await turn.result;
+        return { transport: 'libfx-custom', result };
+      } finally {
+        await ephemeralAgent.close().catch(() => undefined);
+      }
     } finally {
-      await ephemeralAgent.close().catch(() => undefined);
+      // Ensure any workspace file mutations made during the fx turn are persisted to storage.
+      await persistWorkspaceSnapshot(chatId, sandboxTier);
     }
   });
 }

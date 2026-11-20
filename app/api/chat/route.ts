@@ -45,6 +45,7 @@ interface ExtendedChatRequestBody extends ChatRequestBody {
   customModel?: string;
   byokApiKey?: string;
   githubToken?: string;
+  uiActRequireApproval?: boolean;
 }
 
 interface ResumableBusState {
@@ -279,6 +280,7 @@ export async function POST(request: Request): Promise<Response> {
           accessToken: session.vercelAuth.accessToken,
           refreshToken: session.vercelAuth.refreshToken,
           expiresAt: session.vercelAuth.expiresAt,
+          providerId: session.vercelAuth.providerId,
           onRefreshed: async (tokens) => {
             await updateVercelTokens(session.userId, {
               accessToken: tokens.accessToken,
@@ -314,6 +316,7 @@ export async function POST(request: Request): Promise<Response> {
       userId: session.userId,
       sandboxTier: effectiveSandboxTier,
       enableUiBridge: body.enableUiBridge ?? true,
+      uiActRequireApproval: body.uiActRequireApproval ?? true,
       providerOverride: override,
       userVercelAuth,
       githubToken,
@@ -333,6 +336,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const modelMessages = await convertToModelMessages(validatedMessages, {
+      tools,
       ignoreIncompleteToolCalls: true,
     });
 
@@ -363,14 +367,14 @@ export async function POST(request: Request): Promise<Response> {
         messages: modelMessages,
         tools,
         stopWhen: isStepCount(12),
-        onEnd: ({ totalUsage }) => {
+        onEnd: () => {
           const durationMs = Math.round(performance.now() - startedAt);
           try {
             metric('ade.chat.duration_ms', durationMs, { harness: 'ai-sdk' });
             metric('ade.chat.requests', 1, {
               harness: 'ai-sdk',
               billing_source: currentResolved.billingSource,
-              outcome: totalUsage ? 'ok' : 'ok',
+              outcome: finalOutcome,
             });
           } catch {
             // Metrics are best-effort.

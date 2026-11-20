@@ -65,11 +65,15 @@ const browserActionSchema = z.object({
 export async function GET(request: Request): Promise<Response> {
   try {
     const { searchParams } = new URL(request.url);
-    const chatId = normalizeChatId(searchParams.get('chatId'));
-    const access = await authorizeSandboxChatAccess(request, chatId, 'read');
+    const requestedChatId = normalizeChatId(searchParams.get('chatId'));
+    const access = await authorizeSandboxChatAccess(request, requestedChatId, 'read');
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const chatId = access.effectiveChatId ?? requestedChatId;
     const status = await getBrowserStatus(chatId);
     return NextResponse.json({ ok: true, status });
   } catch (error) {
@@ -90,12 +94,16 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const data = parsed.data;
-    const chatId = normalizeChatId(data.chatId);
+    const requestedChatId = normalizeChatId(data.chatId);
 
-    const access = await authorizeSandboxChatAccess(request, chatId, 'write');
+    const access = await authorizeSandboxChatAccess(request, requestedChatId, 'write');
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const chatId = access.effectiveChatId ?? requestedChatId;
 
     try {
       metric('ade.sandbox.actions', 1, { action: `browser_${data.action}` });

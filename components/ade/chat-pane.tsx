@@ -124,7 +124,7 @@ const STARTER_PROMPTS: SuggestionItem[] = [
     description:
       'Render an interactive json-render dashboard with KPI cards, Recharts comparison chart, and sortable table.',
     prompt:
-      'Stream an interactive json-render Generative UI dashboard comparing 2026 frontier AI models (Claude Sonnet 5.5, GPT-6.2 Sol, Gemini 4 Neon, Grok 4.7) across context window, latency, and cost per 1M tokens with a MetricGrid, Bar Chart, and searchable DataTable.',
+      'Stream an interactive json-render Generative UI dashboard comparing 2026 frontier AI models (Claude Sonnet 5.5, GPT-6.2 Sol, Gemini 4 Carbon, Grok 4.7) across context window, latency, and cost per 1M tokens with a MetricGrid, Bar Chart, and searchable DataTable.',
     badge: 'json-render',
     icon: <BarChart3 className="size-3.5" />,
     targetTab: 'genui',
@@ -331,6 +331,7 @@ export function ChatPane({
                 : {}),
               enableGenUi: true,
               enableUiBridge: true,
+              uiActRequireApproval: uiAgentRef.current.requireApproval,
               enableGithubTools: Boolean(cfg.providerSettings.githubToken.trim()),
               uiSnapshot: snap,
             },
@@ -663,11 +664,18 @@ export function ChatPane({
                 : null;
 
             if (
-              (toolName === 'create_artifact' || toolName === 'update_artifact') &&
+              (toolName === 'create_artifact' ||
+                toolName === 'update_artifact' ||
+                toolName === 'write_html_preview') &&
               out?.artifact &&
               typeof out.artifact === 'object'
             ) {
               callbacks.onArtifactDetected(out.artifact as ArtifactRecord, true);
+              if (toolName === 'write_html_preview') {
+                callbacks.onWorkspaceMutated();
+              }
+            } else if (toolName === 'write_html_preview') {
+              callbacks.onWorkspaceMutated();
             } else if (toolName.startsWith('browser_') && out) {
               callbacks.onBrowserToolActivity({
                 url: typeof out.url === 'string' ? out.url : undefined,
@@ -676,6 +684,7 @@ export function ChatPane({
               });
             } else if (
               toolName === 'bash' ||
+              toolName === 'shell' ||
               toolName === 'write_file' ||
               toolName === 'edit_file'
             ) {
@@ -873,8 +882,24 @@ export function ChatPane({
     }
   };
 
+  const rewindServerHistory = useCallback(
+    async (messageId: string | undefined, inclusive: boolean) => {
+      if (!messageId) return;
+      try {
+        await fetch(`/api/chats/${encodeURIComponent(chatId)}/rewind`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageId, inclusive }),
+        });
+      } catch {
+        // Non-fatal on ephemeral or offline sessions
+      }
+    },
+    [chatId],
+  );
+
   const handleRegenerateWithBranch = useCallback(
-    (assistantIndex: number) => {
+    async (assistantIndex: number) => {
       const assistantMsg = messages[assistantIndex];
       const prevUserMsg = messages
         .slice(0, assistantIndex)
@@ -897,9 +922,10 @@ export function ChatPane({
           };
         });
       }
+      await rewindServerHistory(assistantMsg?.id, true);
       void regenerate({ messageId: assistantMsg?.id });
     },
-    [messages, regenerate],
+    [messages, regenerate, rewindServerHistory],
   );
 
   // Sync newly regenerated branch into branch store once settled
@@ -944,7 +970,7 @@ export function ChatPane({
     setMessages([...messages.slice(0, uIdx + 1), ...nextTail]);
   };
 
-  const handleCommitUserEdit = (userMsgIndex: number) => {
+  const handleCommitUserEdit = async (userMsgIndex: number) => {
     const trimmed = editingText.trim();
     const targetMsg = messages[userMsgIndex];
     setEditingMessageId(null);
@@ -963,11 +989,14 @@ export function ChatPane({
 
     const prefix = messages.slice(0, userMsgIndex);
     setMessages(prefix);
+    await rewindServerHistory(targetMsg.id, true);
     void sendMessage({ text: trimmed });
   };
 
   const handleRewindCheckpoint = (turnIndex: number) => {
+    const anchorMsg = messages[turnIndex];
     setMessages((prev) => prev.slice(0, turnIndex + 1));
+    void rewindServerHistory(anchorMsg?.id, false);
     toast.success('Rewound conversation to checkpoint');
   };
 
@@ -1110,7 +1139,7 @@ export function ChatPane({
                             <form
                               onSubmit={(e) => {
                                 e.preventDefault();
-                                handleCommitUserEdit(msgIndex);
+                                void handleCommitUserEdit(msgIndex);
                               }}
                               className="w-[min(560px,82vw)] space-y-2 rounded-[var(--radius-container)] border border-[var(--accent)] bg-[var(--bg-surface)] p-3 shadow-[var(--shadow-med)]"
                             >
@@ -1472,7 +1501,7 @@ export function ChatPane({
 
                                 <button
                                   type="button"
-                                  onClick={() => handleRegenerateWithBranch(msgIndex)}
+                                  onClick={() => void handleRegenerateWithBranch(msgIndex)}
                                   className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-[var(--radius-inner)] px-2 text-[11px] hover:bg-[var(--overlay-hover)] hover:text-[var(--fg-primary)]"
                                   title="Regenerate branch"
                                 >

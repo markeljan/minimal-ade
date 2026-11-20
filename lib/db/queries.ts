@@ -1,5 +1,5 @@
 import { metric } from '@vercel/functions';
-import { and, asc, desc, eq, gt, gte, ilike, inArray, notInArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, ilike, inArray, notInArray, sql } from 'drizzle-orm';
 import { getDbOrNull, isDatabaseConfigured } from '@/lib/db/index';
 import {
   type LocalArtifactEntry,
@@ -39,6 +39,17 @@ export interface ChatRecord extends ChatSummary {
   userId: string;
   pinned: boolean;
   sandboxName: string | null;
+}
+
+/** Thrown by `createChat` when an explicit chat ID already exists. */
+export class ChatAlreadyExistsError extends Error {
+  readonly chatId: string;
+
+  constructor(chatId: string) {
+    super(`Chat "${chatId}" already exists`);
+    this.name = 'ChatAlreadyExistsError';
+    this.chatId = chatId;
+  }
 }
 
 export interface ListChatsOptions {
@@ -316,34 +327,61 @@ export async function listChats(
     }
 
     const chatIds = rows.map((row) => row.id);
-    const msgRows = await db
-      .select({
-        chatId: message.chatId,
-        parts: message.parts,
-        createdAt: message.createdAt,
-      })
-      .from(message)
-      .where(inArray(message.chatId, chatIds))
-      .orderBy(asc(message.createdAt));
+    const [countRows, previewRows] = await Promise.all([
+      db
+        .select({
+          chatId: message.chatId,
+          messageCount: sql<number>`count(*)::int`,
+        })
+        .from(message)
+        .where(inArray(message.chatId, chatIds))
+        .groupBy(message.chatId),
+      db
+        .selectDistinctOn([message.chatId], {
+          chatId: message.chatId,
+          preview: sql<string | null>`left((
+            select elem->>'text'
+            from jsonb_array_elements(${message.parts}) as elem
+            where elem->>'type' = 'text'
+              and length(btrim(coalesce(elem->>'text', ''))) > 0
+            limit 1
+          ), 160)`,
+        })
+        .from(message)
+        .where(
+          and(
+            inArray(message.chatId, chatIds),
+            sql`jsonb_typeof(${message.parts}) = 'array'`,
+            sql`exists (
+              select 1
+              from jsonb_array_elements(${message.parts}) as elem
+              where elem->>'type' = 'text'
+                and length(btrim(coalesce(elem->>'text', ''))) > 0
+            )`,
+          ),
+        )
+        .orderBy(asc(message.chatId), desc(message.createdAt)),
+    ]);
 
-    const statsByChat = new Map<string, { count: number; lastPreview?: string }>();
-    for (const msg of msgRows) {
-      const current = statsByChat.get(msg.chatId) ?? { count: 0 };
-      current.count += 1;
-      const preview = extractMessagePreview(Array.isArray(msg.parts) ? msg.parts : []);
-      if (preview) {
-        current.lastPreview = preview;
-      }
-      statsByChat.set(msg.chatId, current);
+    const countByChat = new Map<string, number>();
+    for (const row of countRows) {
+      countByChat.set(row.chatId, Number(row.messageCount) || 0);
     }
 
-    return rows.map((row) => {
-      const stats = statsByChat.get(row.id);
-      return mapChatRow(row, {
-        messageCount: stats?.count ?? 0,
-        lastMessagePreview: stats?.lastPreview,
-      });
-    });
+    const previewByChat = new Map<string, string>();
+    for (const row of previewRows) {
+      const text = row.preview?.trim();
+      if (text) {
+        previewByChat.set(row.chatId, truncateText(text, 120));
+      }
+    }
+
+    return rows.map((row) =>
+      mapChatRow(row, {
+        messageCount: countByChat.get(row.id) ?? 0,
+        lastMessagePreview: previewByChat.get(row.id),
+      }),
+    );
   }
 
   const store = await readLocalStore();
@@ -416,7 +454,12 @@ export async function createChat(input: CreateChatInput): Promise<ChatRecord> {
         createdAt: now,
         updatedAt: now,
       })
+      .onConflictDoNothing({ target: chat.id })
       .returning();
+
+    if (!inserted) {
+      throw new ChatAlreadyExistsError(id);
+    }
 
     emitDbMetric('ade.db.chats', { action: 'create', backend: 'postgres' });
     return mapChatRow(inserted, { messageCount: 0 });
@@ -436,6 +479,9 @@ export async function createChat(input: CreateChatInput): Promise<ChatRecord> {
   };
 
   await mutateLocalStore((store) => {
+    if (store.chats[id]) {
+      throw new ChatAlreadyExistsError(id);
+    }
     store.chats[id] = entry;
   });
 
@@ -673,7 +719,7 @@ export async function saveMessages(
     const createdDate = item.createdAt ? toDate(item.createdAt) : new Date(baseMs + idx);
     return {
       id: item.id?.trim() || generateId('msg'),
-      chatId: item.chatId ?? chatId,
+      chatId,
       parentId: item.parentId ?? null,
       role: normalizeRole(item.role),
       parts: Array.isArray(item.parts) ? item.parts : [],
@@ -691,7 +737,7 @@ export async function saveMessages(
         .insert(message)
         .values({
           id: item.id,
-          chatId: item.chatId,
+          chatId,
           parentId: item.parentId,
           role: item.role,
           parts: item.parts,
@@ -708,11 +754,32 @@ export async function saveMessages(
             attachments: item.attachments,
             metadata: item.metadata,
           },
+          setWhere: eq(message.chatId, chatId),
         })
         .returning();
 
       if (row) {
         saved.push(mapMessageRow(row));
+      } else {
+        // Cross-tenant message ID collision: never overwrite another chat's message.
+        // Persist cleanly under a freshly minted ID scoped to this chatId.
+        const [mintedRow] = await db
+          .insert(message)
+          .values({
+            id: generateId('msg'),
+            chatId,
+            parentId: item.parentId,
+            role: item.role,
+            parts: item.parts,
+            attachments: item.attachments,
+            metadata: item.metadata,
+            createdAt: item.createdAt,
+          })
+          .returning();
+
+        if (mintedRow) {
+          saved.push(mapMessageRow(mintedRow));
+        }
       }
     }
 
@@ -722,15 +789,24 @@ export async function saveMessages(
   }
 
   const saved = await mutateLocalStore((store) => {
+    const foreignIds = new Set<string>();
+    for (const [otherChatId, entries] of Object.entries(store.messages)) {
+      if (otherChatId === chatId) continue;
+      for (const entry of entries) {
+        foreignIds.add(entry.id);
+      }
+    }
+
     const current = store.messages[chatId] ?? [];
     const byId = new Map(current.map((entry) => [entry.id, entry]));
 
     const results: StoredMessageRecord[] = [];
     for (const item of normalized) {
-      const existing = byId.get(item.id);
+      const safeId = foreignIds.has(item.id) ? generateId('msg') : item.id;
+      const existing = byId.get(safeId);
       const entry: LocalMessageEntry = {
-        id: item.id,
-        chatId: item.chatId,
+        id: safeId,
+        chatId,
         parentId: item.parentId,
         role: item.role,
         parts: item.parts,
@@ -738,7 +814,7 @@ export async function saveMessages(
         metadata: item.metadata,
         createdAt: existing ? existing.createdAt : item.createdAt.toISOString(),
       };
-      byId.set(item.id, entry);
+      byId.set(safeId, entry);
       results.push(mapMessageRow(entry));
     }
 

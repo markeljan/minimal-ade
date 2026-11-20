@@ -72,20 +72,53 @@ function inferWorkbenchTarget(
   ) {
     return { tab: 'terminal', label: 'Open Terminal' };
   }
+  if (lower === 'write_html_preview' || lower.includes('html_preview')) {
+    const target =
+      typeof outputObj.artifactId === 'string'
+        ? outputObj.artifactId
+        : typeof outputObj.id === 'string'
+          ? outputObj.id
+          : typeof outputObj.path === 'string'
+            ? outputObj.path
+            : typeof inputObj.path === 'string'
+              ? inputObj.path
+              : undefined;
+    return { tab: 'preview', label: 'Open Preview', target };
+  }
   if (lower.includes('artifact')) {
     const kind = String(inputObj.kind ?? outputObj.kind ?? '');
-    const id = typeof outputObj.id === 'string' ? outputObj.id : undefined;
+    const target =
+      typeof outputObj.artifactId === 'string'
+        ? outputObj.artifactId
+        : typeof outputObj.id === 'string'
+          ? outputObj.id
+          : typeof outputObj.path === 'string'
+            ? outputObj.path
+            : typeof inputObj.artifactId === 'string'
+              ? inputObj.artifactId
+              : typeof inputObj.id === 'string'
+                ? inputObj.id
+                : undefined;
     if (kind === 'html') {
-      return { tab: 'preview', label: 'Open Preview', target: id };
+      return { tab: 'preview', label: 'Open Preview', target };
     }
     if (kind === 'genui') {
-      return { tab: 'genui', label: 'Open GenUI Canvas', target: id };
+      return { tab: 'genui', label: 'Open GenUI Canvas', target };
     }
-    return { tab: 'files', label: 'Open in Canvas', target: id };
+    return { tab: 'files', label: 'Open in Canvas', target };
   }
   if (lower.includes('file') || lower.includes('write') || lower.includes('edit')) {
-    const path = typeof inputObj.path === 'string' ? inputObj.path : undefined;
-    return { tab: 'files', label: 'Open Files', target: path };
+    const target =
+      typeof outputObj.path === 'string'
+        ? outputObj.path
+        : typeof inputObj.path === 'string'
+          ? inputObj.path
+          : typeof outputObj.artifactId === 'string'
+            ? outputObj.artifactId
+            : typeof outputObj.id === 'string'
+              ? outputObj.id
+              : undefined;
+    return { tab: 'files', label: 'Open Files', target };
   }
   return null;
 }

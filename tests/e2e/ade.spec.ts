@@ -93,10 +93,12 @@ test.describe('Minimal ADE End-to-End Verification', () => {
     // Open Settings & Providers directly from Command Palette
     await paletteDialog.getByText('Settings, Providers & Billing Waterfall').click();
 
-    // 6. Verify Settings & Providers Dialog (5-Tier Waterfall + Custom OpenAI-Compatible inputs)
+    // 6. Verify Settings & Providers Dialog (5-Tier Waterfall 1/2a/2b/3/4/5 + Custom OpenAI-Compatible inputs)
     const settingsHeading = page.getByRole('heading', { name: /Workspace Settings & Providers/i });
     await expect(settingsHeading).toBeVisible();
     await expect(page.getByText('5-Tier Provider & Billing Waterfall')).toBeVisible();
+    await expect(page.getByText('2a', { exact: true })).toBeVisible();
+    await expect(page.getByText('2b', { exact: true })).toBeVisible();
     await expect(page.getByText('Custom OpenAI-Compatible Endpoint').first()).toBeVisible();
     await expect(page.getByText('Your BYOK API Key (OpenAI / Gateway)')).toBeVisible();
     await expect(page.getByText('Signed-in Vercel Account Credits')).toBeVisible();
@@ -167,13 +169,15 @@ test.describe('Minimal ADE End-to-End Verification', () => {
       'true',
     );
 
-    // Files & Canvas tab
+    // Files tab — verify starter files tree and file selection
     await tablist.getByRole('tab', { name: /Files/i }).click();
     await expect(tablist.getByRole('tab', { name: /Files/i })).toHaveAttribute(
       'aria-selected',
       'true',
     );
     await expect(workbench.getByText('README.md').first()).toBeVisible();
+    await workbench.getByText('index.html').first().click();
+    await expect(workbench.getByText('Minimal ADE').first()).toBeVisible();
 
     // GenUI Canvas tab
     await tablist.getByRole('tab', { name: /GenUI/i }).click();
@@ -220,5 +224,14 @@ test.describe('Minimal ADE End-to-End Verification', () => {
     expect(pageErrors).toEqual([]);
     expect(consoleErrors).toEqual([]);
     expect(serverErrors).toEqual([]);
+  });
+
+  test('returns genuine HTTP 404 for nonexistent or unauthorized /chat/[id] routes', async ({
+    page,
+  }) => {
+    const response = await page.goto('/chat/nonexistent-private-chat-id', {
+      waitUntil: 'domcontentloaded',
+    });
+    expect(response?.status()).toBe(404);
   });
 });

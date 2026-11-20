@@ -39,7 +39,7 @@ export function exportSpecToReactTsx(spec: Spec, componentName = 'GeneratedAdeWi
   const lines: string[] = [];
 
   if (usedComponents.length > 0) {
-    lines.push(`import { ${usedComponents.join(', ')} } from '@/components/genui/components';`);
+    lines.push(`import { ${usedComponents.join(', ')} } from '@/components/genui/registry';`);
     lines.push('');
   }
 
@@ -137,7 +137,19 @@ export function GenUIRenderer({
   const [showCode, setShowCode] = React.useState(false);
   const [copiedCode, setCopiedCode] = React.useState(false);
 
-  const actionHandlers = React.useMemo(() => createAdeActionHandlers(onAction), [onAction]);
+  // Keep latest onAction in a ref so @json-render/react ActionProvider's
+  // mount-time useState(initialHandlers) never invokes stale closures.
+  const onActionRef = React.useRef<GenUiActionHandler | undefined>(onAction);
+  onActionRef.current = onAction;
+
+  const stableOnAction = React.useCallback<GenUiActionHandler>((actionName, params) => {
+    return onActionRef.current?.(actionName, params);
+  }, []);
+
+  const actionHandlers = React.useMemo(
+    () => createAdeActionHandlers(stableOnAction),
+    [stableOnAction],
+  );
 
   const generatedTsx = React.useMemo(() => {
     if (!spec || !showCode) {
@@ -189,7 +201,7 @@ export function GenUIRenderer({
       data-slot="genui-renderer"
       className={cn('my-3 flex flex-col gap-2.5 rounded-[var(--radius-container)]', className)}
     >
-      <GenUiActionBridgeProvider onAction={onAction}>
+      <GenUiActionBridgeProvider onAction={stableOnAction}>
         <JSONUIProvider registry={adeRegistry} initialState={spec.state} handlers={actionHandlers}>
           <div className="flex flex-col gap-2.5">
             <Renderer spec={spec} registry={adeRegistry} loading={loading} />

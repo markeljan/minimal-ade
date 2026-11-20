@@ -32,6 +32,7 @@ async function handleRealtimeTokenRequest(
           accessToken: session.vercelAuth.accessToken,
           refreshToken: session.vercelAuth.refreshToken,
           expiresAt: session.vercelAuth.expiresAt,
+          providerId: session.vercelAuth.providerId,
           onRefreshed: async (tokens) => {
             await updateVercelTokens(session.userId, {
               accessToken: tokens.accessToken,

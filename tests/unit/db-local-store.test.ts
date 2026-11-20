@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getDbOrNull, isDatabaseConfigured } from '@/lib/db/index';
 import type { LocalStoreData } from '@/lib/db/local-store';
 import {
+  ChatAlreadyExistsError,
   createChat,
   deleteArtifact,
   deleteChat,
@@ -364,5 +365,40 @@ describe('local fallback store (zero-DB CRUD, branching, artifacts, workspace sy
     expect(await deleteWorkspaceFile(chatId, 'README.md')).toBe(true);
     expect(await deleteWorkspaceFile(chatId, 'does-not-exist.md')).toBe(false);
     expect((await getWorkspaceFiles(chatId)).map((f) => f.path)).toEqual(['index.html']);
+  });
+
+  it('rejects duplicate chat IDs with ChatAlreadyExistsError and prevents cross-chat saveMessages overwrite', async () => {
+    const victim = await createChat({ id: 'chat-victim', userId: 'user-a', title: 'Victim Chat' });
+    await expect(
+      createChat({ id: 'chat-victim', userId: 'user-b', title: 'Hijack Attempt' }),
+    ).rejects.toBeInstanceOf(ChatAlreadyExistsError);
+
+    const attacker = await createChat({
+      id: 'chat-attacker',
+      userId: 'user-b',
+      title: 'Attacker Chat',
+    });
+
+    await saveMessages(victim.id, [
+      { id: 'shared-msg-id', role: 'user', parts: [{ type: 'text', text: 'Original secret' }] },
+    ]);
+
+    const attackerSaved = await saveMessages(attacker.id, [
+      {
+        id: 'shared-msg-id',
+        chatId: victim.id, // Attempt to target victim chat with colliding message ID
+        role: 'user',
+        parts: [{ type: 'text', text: 'Overwrite attempt' }],
+      },
+    ]);
+
+    // Victim's message MUST remain untouched
+    const victimMessages = await getMessagesByChatId(victim.id);
+    expect(victimMessages).toHaveLength(1);
+    expect((victimMessages[0]?.parts[0] as { text?: string })?.text).toBe('Original secret');
+
+    // Attacker's message was scoped strictly to attacker.id with a fresh non-colliding ID
+    expect(attackerSaved[0]?.chatId).toBe(attacker.id);
+    expect(attackerSaved[0]?.id).not.toBe('shared-msg-id');
   });
 });

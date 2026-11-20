@@ -15,6 +15,7 @@ export interface TerminalPaneProps {
   tier?: SandboxTier;
   files?: Record<string, string>;
   queuedCommand?: { id: string; command: string } | null;
+  onQueuedCommandConsumed?: (id: string) => void;
   onFilesChanged?: (files: WorkspaceFileEntry[]) => void;
   onTierChange?: (tier: SandboxTier) => void;
   onOpenTab?: (tab: WorkbenchTab) => void;
@@ -46,6 +47,7 @@ export function TerminalPane({
   tier: controlledTier,
   files: externalFiles,
   queuedCommand,
+  onQueuedCommandConsumed,
   onFilesChanged,
   onTierChange,
   onOpenTab,
@@ -75,6 +77,12 @@ export function TerminalPane({
   const [workspaceFiles, setWorkspaceFiles] = useState<Record<string, string>>(externalFiles ?? {});
   const workspaceFilesRef = useRef<Record<string, string>>(externalFiles ?? {});
   const [shellReadyNonce, setShellReadyNonce] = useState<number>(0);
+  const [shellAttachedNonce, setShellAttachedNonce] = useState<number>(0);
+  const onQueuedCommandConsumedRef = useRef(onQueuedCommandConsumed);
+
+  useEffect(() => {
+    onQueuedCommandConsumedRef.current = onQueuedCommandConsumed;
+  }, [onQueuedCommandConsumed]);
 
   useEffect(() => {
     setMounted(true);
@@ -267,6 +275,9 @@ export function TerminalPane({
         writeTerm(formatCloudPrompt(cloudCwdRef.current));
         setStatusNotice('Cloud Sandbox shell ready · /vercel/sandbox');
       }
+      if (!cancelled) {
+        setShellAttachedNonce((n) => n + 1);
+      }
     }
 
     void init();
@@ -275,12 +286,22 @@ export function TerminalPane({
     };
   }, [mounted, shellReadyNonce, mode, fetchWorkspaceFiles, attachLocalBash, writeTerm]);
 
-  // Execute externally queued commands (e.g., UI Agent Bridge `terminal-run` or GenUI `run_command`).
+  // Execute externally queued commands once the active shell is attached and consume immediately.
   useEffect(() => {
-    if (!queuedCommand || queuedCommand.id === lastQueuedIdRef.current || shellReadyNonce === 0) {
+    if (
+      !queuedCommand ||
+      queuedCommand.id === lastQueuedIdRef.current ||
+      shellReadyNonce === 0 ||
+      shellAttachedNonce === 0
+    ) {
       return;
     }
+    if (modeRef.current === 'just-bash' && !shellRef.current) {
+      return;
+    }
+
     lastQueuedIdRef.current = queuedCommand.id;
+    onQueuedCommandConsumedRef.current?.(queuedCommand.id);
 
     if (modeRef.current === 'just-bash' && shellRef.current) {
       void (async () => {
@@ -293,7 +314,7 @@ export function TerminalPane({
       writeTerm(`${queuedCommand.command}\r\n`);
       void runCloudCommand(queuedCommand.command);
     }
-  }, [queuedCommand, runCloudCommand, shellReadyNonce, writeTerm]);
+  }, [queuedCommand, runCloudCommand, shellReadyNonce, shellAttachedNonce, writeTerm]);
 
   const handleTerminalData = useCallback(
     (data: string) => {

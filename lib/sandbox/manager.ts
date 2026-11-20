@@ -257,39 +257,103 @@ export interface WorkspaceBashToolkit extends BashToolkit {
 
 export interface SandboxAccessResult {
   allowed: boolean;
-  status?: 403;
+  status?: 403 | 503;
   error?: string;
   userId?: string;
+  effectiveChatId?: string;
+}
+
+export interface AuthorizeSandboxOptions {
+  /**
+   * Require verified ownership of a persisted chat (or an authenticated non-guest session
+   * for their scoped default workspace). Used to guard host-billed Cloud Sandbox microVMs.
+   */
+  requireOwnedChat?: boolean;
 }
 
 /**
- * Verifies session ownership for a sandbox/workspace chatId.
- * - If the chat record exists and belongs to a different user, denies writes (403)
- *   and denies reads unless `chat.visibility === 'public'`.
- * - Ephemeral / unsaved workspaces (e.g. `'default'`) remain accessible to the current session.
+ * Fail-closed session ownership guard for sandbox & workspace routes.
+ * - Scopes `'default'` strictly per session user (`default:${session.userId}`).
+ * - Propagates DB lookup failures as HTTP 503 (never fails open).
+ * - Denies cross-user access with HTTP 403 (allowing `visibility === 'public'` strictly on
+ *   read-only GET requests).
+ * - Rejects unowned/nonexistent arbitrary chat IDs for host-billed microVM provisioning.
  */
 export async function authorizeSandboxChatAccess(
   request: Request,
   chatId: string,
   access: 'read' | 'write',
+  options?: AuthorizeSandboxOptions,
 ): Promise<SandboxAccessResult> {
-  const id = normalizeChatId(chatId);
-  const [{ getServerSession }, chatRecord] = await Promise.all([
-    import('@/lib/auth/session'),
-    dbGetChatById(id).catch(() => null),
-  ]);
+  const rawId = normalizeChatId(chatId);
+  const { getServerSession } = await import('@/lib/auth/session');
   const session = await getServerSession(request.headers);
+  const scopedDefaultId = `default:${session.userId}`;
+
+  if (rawId === 'default' || rawId.startsWith('default:')) {
+    if (rawId !== 'default' && rawId !== scopedDefaultId) {
+      return {
+        allowed: false,
+        status: 403,
+        error: 'Forbidden: you do not have access to this workspace.',
+      };
+    }
+
+    if (options?.requireOwnedChat && (!session.isAuthenticated || session.isGuest)) {
+      return {
+        allowed: false,
+        status: 403,
+        error: 'Forbidden: sign in or start a saved chat session to provision a Cloud Sandbox VM.',
+      };
+    }
+
+    return {
+      allowed: true,
+      userId: session.userId,
+      effectiveChatId: scopedDefaultId,
+    };
+  }
+
+  let chatRecord: Awaited<ReturnType<typeof dbGetChatById>>;
+  try {
+    chatRecord = await dbGetChatById(rawId);
+  } catch {
+    return {
+      allowed: false,
+      status: 503,
+      error: 'Workspace authorization temporarily unavailable.',
+    };
+  }
 
   if (!chatRecord) {
-    return { allowed: true, userId: session.userId };
+    if (options?.requireOwnedChat) {
+      return {
+        allowed: false,
+        status: 403,
+        error: 'Forbidden: Cloud Sandbox VMs require an existing owned chat session.',
+      };
+    }
+    return {
+      allowed: true,
+      userId: session.userId,
+      effectiveChatId: rawId,
+    };
   }
 
   if (chatRecord.userId === session.userId) {
-    return { allowed: true, userId: session.userId };
+    return {
+      allowed: true,
+      userId: session.userId,
+      effectiveChatId: rawId,
+    };
   }
 
-  if (access === 'read' && chatRecord.visibility === 'public') {
-    return { allowed: true, userId: session.userId };
+  if (access === 'read' && chatRecord.visibility === 'public' && !options?.requireOwnedChat) {
+    return {
+      allowed: true,
+      userId: session.userId,
+      effectiveChatId: rawId,
+    };
   }
 
   return {
@@ -302,6 +366,7 @@ export async function authorizeSandboxChatAccess(
 // Persist in-memory workspace state and active cloud handles across Next.js dev HMR reloads.
 const globalSandboxState = globalThis as typeof globalThis & {
   __minimalAdeWorkspaceStore?: Map<string, Map<string, string>>;
+  __minimalAdeInitializedWorkspaces?: Set<string>;
   __minimalAdeCloudSandboxes?: Map<string, ActiveCloudSandbox>;
   __minimalAdePreferredTier?: Map<string, SandboxTier>;
   __minimalAdeDbAdapter?: WorkspacePersistenceAdapter | null;
@@ -312,6 +377,13 @@ function getMemoryStore(): Map<string, Map<string, string>> {
     globalSandboxState.__minimalAdeWorkspaceStore = new Map();
   }
   return globalSandboxState.__minimalAdeWorkspaceStore;
+}
+
+function getInitializedWorkspaces(): Set<string> {
+  if (!globalSandboxState.__minimalAdeInitializedWorkspaces) {
+    globalSandboxState.__minimalAdeInitializedWorkspaces = new Set();
+  }
+  return globalSandboxState.__minimalAdeInitializedWorkspaces;
 }
 
 function getCloudRegistry(): Map<string, ActiveCloudSandbox> {
@@ -484,6 +556,7 @@ function getMemoryFileMap(chatId: string): Map<string, string> {
 async function hydrateWorkspaceRecord(chatId: string): Promise<Record<string, string>> {
   const id = normalizeChatId(chatId);
   const memMap = getMemoryFileMap(id);
+  const initialized = getInitializedWorkspaces();
 
   const db = await resolveDbAdapter();
   if (db) {
@@ -501,6 +574,7 @@ async function hydrateWorkspaceRecord(chatId: string): Promise<Record<string, st
             // Skip invalid paths if any exist in external storage.
           }
         }
+        initialized.add(id);
         return record;
       }
     } catch {
@@ -508,15 +582,16 @@ async function hydrateWorkspaceRecord(chatId: string): Promise<Record<string, st
     }
   }
 
-  if (memMap.size > 0) {
+  if (memMap.size > 0 || initialized.has(id)) {
     return Object.fromEntries(memMap.entries());
   }
 
-  // Seed fresh workspace with clean starter files.
+  // Seed fresh workspace with clean starter files once.
   const seeded = { ...STARTER_WORKSPACE_FILES };
   for (const [relPath, content] of Object.entries(seeded)) {
     memMap.set(relPath, content);
   }
+  initialized.add(id);
 
   if (db) {
     try {
@@ -535,6 +610,7 @@ async function persistWorkspaceRecord(
 ): Promise<void> {
   const id = normalizeChatId(chatId);
   const memMap = getMemoryFileMap(id);
+  getInitializedWorkspaces().add(id);
   memMap.clear();
   for (const [relPath, content] of Object.entries(files)) {
     memMap.set(relPath, content);
@@ -669,6 +745,9 @@ export async function getOrCreateCloudSandbox(
       ports: [3000, 4848, 8080],
       timeout: ms('15m'),
       persistent: true,
+      env: {
+        AGENT_BROWSER_STREAM_PORT: '4848',
+      },
       onCreate: async (sbx: VercelSandbox) => {
         const currentFiles = await hydrateWorkspaceRecord(id);
         await syncFilesToCloudSandbox(sbx, currentFiles);
@@ -1112,6 +1191,7 @@ export async function deleteFile(
   const existed = relPath in record;
   delete record[relPath];
 
+  getInitializedWorkspaces().add(id);
   const memMap = getMemoryFileMap(id);
   memMap.delete(relPath);
 

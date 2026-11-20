@@ -213,8 +213,19 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const triggerMenuOpenRef = useRef(false);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const speechRecognitionRef = useRef<{
+    lang: string;
+    interimResults: boolean;
+    onresult: ((e: { results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
+    onerror: (() => void) | null;
+    onend: (() => void) | null;
+    start: () => void;
+    stop: () => void;
+  } | null>(null);
 
   const activeModel = useMemo(
     () => models.find((m) => m.id === modelId) ?? getModelDefinition(modelId) ?? models[0],
@@ -298,10 +309,60 @@ export function Composer({
     }
   };
 
+  const startWebSpeechDictation = useCallback((): boolean => {
+    if (typeof window === 'undefined') return false;
+    const win = window as unknown as {
+      SpeechRecognition?: new () => NonNullable<typeof speechRecognitionRef.current>;
+      webkitSpeechRecognition?: new () => NonNullable<typeof speechRecognitionRef.current>;
+    };
+    const SR = win.SpeechRecognition ?? win.webkitSpeechRecognition;
+    if (!SR) return false;
+
+    try {
+      speechRecognitionRef.current?.stop();
+    } catch {
+      // ignore
+    }
+
+    const rec = new SR();
+    rec.lang = 'en-US';
+    rec.interimResults = false;
+    rec.onresult = (e) => {
+      const text = e.results[0]?.[0]?.transcript?.trim();
+      if (text) {
+        const latest = valueRef.current;
+        onChange(latest ? `${latest.trimEnd()} ${text}` : text);
+        textareaRef.current?.focus();
+      }
+    };
+    rec.onerror = () => {
+      speechRecognitionRef.current = null;
+      setRecording(false);
+    };
+    rec.onend = () => {
+      speechRecognitionRef.current = null;
+      setRecording(false);
+    };
+    speechRecognitionRef.current = rec;
+    setRecording(true);
+    rec.start();
+    return true;
+  }, [onChange]);
+
   // Voice Dictation (MediaRecorder -> /api/voice/transcribe with Web Speech API fallback)
   const toggleVoiceDictation = useCallback(async () => {
     if (recording) {
-      mediaRecorderRef.current?.stop();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {
+          // ignore
+        }
+        speechRecognitionRef.current = null;
+      }
       setRecording(false);
       return;
     }
@@ -321,6 +382,7 @@ export function Composer({
         };
         recorder.onstop = async () => {
           for (const track of stream.getTracks()) track.stop();
+          mediaRecorderRef.current = null;
           const blob = new Blob(audioChunksRef.current, {
             type: recorder.mimeType || 'audio/webm',
           });
@@ -340,17 +402,24 @@ export function Composer({
               body: form,
             });
             if (!res.ok) {
-              throw new Error('Server transcription unavailable');
+              throw new Error(`Server transcription unavailable (${res.status})`);
             }
             const data = (await res.json()) as { text?: string };
             if (data.text?.trim()) {
-              onChange(value ? `${value.trimEnd()} ${data.text.trim()}` : data.text.trim());
+              const latest = valueRef.current;
+              onChange(latest ? `${latest.trimEnd()} ${data.text.trim()}` : data.text.trim());
               textareaRef.current?.focus();
             }
           } catch {
-            toast.info(
-              'Server transcription unavailable — try Live Realtime Voice or browser dictation.',
-            );
+            if (startWebSpeechDictation()) {
+              toast.info(
+                'Server transcription unavailable — switched to live browser dictation. Speak now…',
+              );
+            } else {
+              toast.info(
+                'Server transcription unavailable — try Live Realtime Voice or browser dictation.',
+              );
+            }
           } finally {
             setTranscribing(false);
           }
@@ -365,41 +434,10 @@ export function Composer({
       }
     }
 
-    // Web Speech API fallback
-    const win = window as unknown as {
-      SpeechRecognition?: new () => {
-        lang: string;
-        interimResults: boolean;
-        onresult: (e: { results: ArrayLike<{ 0: { transcript: string } }> }) => void;
-        onend: () => void;
-        start: () => void;
-      };
-      webkitSpeechRecognition?: new () => {
-        lang: string;
-        interimResults: boolean;
-        onresult: (e: { results: ArrayLike<{ 0: { transcript: string } }> }) => void;
-        onend: () => void;
-        start: () => void;
-      };
-    };
-    const SR = win.SpeechRecognition ?? win.webkitSpeechRecognition;
-    if (!SR) {
+    if (!startWebSpeechDictation()) {
       toast.error('Microphone access or Speech Recognition is unavailable.');
-      return;
     }
-    const rec = new SR();
-    rec.lang = 'en-US';
-    rec.interimResults = false;
-    setRecording(true);
-    rec.onresult = (e) => {
-      const text = e.results[0]?.[0]?.transcript?.trim();
-      if (text) {
-        onChange(value ? `${value.trimEnd()} ${text}` : text);
-      }
-    };
-    rec.onend = () => setRecording(false);
-    rec.start();
-  }, [recording, onChange, value, providerOverrideHeader]);
+  }, [recording, onChange, providerOverrideHeader, startWebSpeechDictation]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = value.trim();

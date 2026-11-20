@@ -393,7 +393,27 @@ export function Sidebar({
                   variant="primary"
                   size="xs"
                   className="mt-2 w-full"
-                  onClick={() => void signInWithVercel(window.location.pathname || '/')}
+                  onClick={async () => {
+                    try {
+                      const res = await signInWithVercel(window.location.pathname || '/');
+                      if (res && typeof res === 'object' && 'error' in res && res.error) {
+                        const msg =
+                          typeof res.error === 'object' &&
+                          res.error !== null &&
+                          'message' in res.error
+                            ? String((res.error as { message?: string }).message ?? '')
+                            : '';
+                        toast.error(
+                          msg ||
+                            'Sign in with Vercel is not configured on this host (set VERCEL_CLIENT_ID & VERCEL_CLIENT_SECRET).',
+                        );
+                      }
+                    } catch {
+                      toast.error(
+                        'Sign in with Vercel is not configured on this host (set VERCEL_CLIENT_ID & VERCEL_CLIENT_SECRET).',
+                      );
+                    }
+                  }}
                 >
                   <span>▲</span> Sign in with Vercel
                 </Button>

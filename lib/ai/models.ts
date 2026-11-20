@@ -10,6 +10,22 @@ export const IMAGE_OPENAI_MODEL_ID = 'openai/gpt-image-2';
 export const STT_MODEL_ID = 'openai/gpt-transcribe';
 export const TTS_MODEL_ID = 'openai/tts-1';
 export const REALTIME_MODEL_ID = 'openai/gpt-realtime-2';
+export const REALTIME_OPENAI_DIRECT_MODEL_ID = 'gpt-realtime';
+
+export const GATEWAY_REALTIME_MODEL_IDS = [
+  'openai/gpt-realtime-2',
+  'openai/gpt-realtime-2.1',
+  'openai/gpt-realtime-1.5',
+  'openai/gpt-realtime-mini',
+  'openai/gpt-live-1',
+  'google/gemini-3.8-live',
+  'google/gemini-3.8-live-extended-thinking',
+  'spacexai/grok-voice-3.0',
+  'elevenlabs/eleven-realtime-v1-max',
+  'elevenlabs/eleven-realtime-v1-mini',
+] as const;
+
+const GATEWAY_REALTIME_MODEL_SET = new Set<string>(GATEWAY_REALTIME_MODEL_IDS);
 
 export const MODEL_CATALOG: readonly ModelDefinition[] = [
   // Anthropic
@@ -114,8 +130,8 @@ export const MODEL_CATALOG: readonly ModelDefinition[] = [
 
   // Google
   {
-    id: 'google/gemini-4-neon',
-    name: 'Gemini 4 Neon',
+    id: 'google/gemini-4-carbon',
+    name: 'Gemini 4 Carbon',
     provider: 'google',
     description: 'Google flagship 2M-context multimodal reasoning and synthesis model.',
     contextWindow: 2_000_000,
@@ -134,6 +150,18 @@ export const MODEL_CATALOG: readonly ModelDefinition[] = [
     tier: 'balanced',
     inputCostPerMillion: 2.0,
     outputCostPerMillion: 10.0,
+  },
+  {
+    id: 'google/gemini-4-hydrogen',
+    name: 'Gemini 4 Hydrogen',
+    provider: 'google',
+    description:
+      'Efficiency-tuned 2M-context Gemini 4 model for fast multi-file analysis and coding.',
+    contextWindow: 2_000_000,
+    capabilities: ['text', 'vision', 'file-input', 'tools', 'reasoning'],
+    tier: 'balanced',
+    inputCostPerMillion: 1.5,
+    outputCostPerMillion: 7.5,
   },
   {
     id: 'google/gemini-3.8-flash',
@@ -253,6 +281,33 @@ export function toOpenAIDirectModelId(modelId?: string | null): string {
   }
 
   return stripProviderPrefix(DEFAULT_OPENAI_MODEL_ID);
+}
+
+/**
+ * Coerce any requested model ID to a verified Vercel AI Gateway Realtime model ID.
+ * Non-realtime chat models (e.g. `anthropic/claude-sonnet-5.5`, `openai/gpt-6.2-sol`)
+ * are always coerced to `openai/gpt-realtime-2`.
+ */
+export function toGatewayRealtimeModelId(modelId?: string | null): string {
+  const trimmed = modelId?.trim();
+  if (!trimmed) {
+    return REALTIME_MODEL_ID;
+  }
+  if (GATEWAY_REALTIME_MODEL_SET.has(trimmed)) {
+    return trimmed;
+  }
+  return REALTIME_MODEL_ID;
+}
+
+/**
+ * Coerce any requested model ID to a verified direct OpenAI Realtime model ID (`gpt-realtime`).
+ */
+export function toOpenAIDirectRealtimeModelId(modelId?: string | null): string {
+  const trimmed = modelId?.trim();
+  if (trimmed === REALTIME_OPENAI_DIRECT_MODEL_ID || trimmed === 'openai/gpt-realtime') {
+    return REALTIME_OPENAI_DIRECT_MODEL_ID;
+  }
+  return REALTIME_OPENAI_DIRECT_MODEL_ID;
 }
 
 /** Group curated catalog entries by provider family for model picker UIs. */

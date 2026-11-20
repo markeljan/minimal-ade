@@ -37,6 +37,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  RotateCcw,
   Save,
   Sparkles,
   Trash2,
@@ -66,6 +67,9 @@ export interface FilesEditorPaneProps {
   onSelectArtifact?: (id: string) => void;
   onUpdateArtifact?: (artifact: ArtifactRecord) => void;
   workspaceFiles?: WorkspaceFileEntry[];
+  selectedFilePath?: string | null;
+  fileSelectionNonce?: number;
+  onSelectFilePath?: (path: string | null) => void;
   onWorkspaceFilesChange?: (files: WorkspaceFileEntry[]) => void;
   onAskAiEdit?: (req: InlineAiEditRequest) => void;
   onOpenHtmlInPreview?: (html: string, title?: string) => void;
@@ -300,6 +304,58 @@ function renderTreeNodes(
   });
 }
 
+function collectParentFolders(filePath: string): string[] {
+  const clean = filePath.replace(/^\/+/, '');
+  const parts = clean.split('/');
+  const folders: string[] = [];
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    folders.push(parts.slice(0, i + 1).join('/'));
+  }
+  return folders;
+}
+
+function getArtifactDownloadFilename(artifact: ArtifactRecord | null): string {
+  const baseTitle = (artifact?.title ?? 'artifact')
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  const safeBase = baseTitle || 'artifact';
+  const lang = (artifact?.language ?? '').trim().toLowerCase();
+  const extMap: Record<string, string> = {
+    typescript: 'ts',
+    ts: 'ts',
+    tsx: 'tsx',
+    javascript: 'js',
+    js: 'js',
+    jsx: 'jsx',
+    python: 'py',
+    py: 'py',
+    html: 'html',
+    css: 'css',
+    json: 'json',
+    markdown: 'md',
+    md: 'md',
+    diff: 'diff',
+    bash: 'sh',
+    shell: 'sh',
+    sh: 'sh',
+    sql: 'sql',
+  };
+  const inferredExt =
+    artifact?.kind === 'html'
+      ? 'html'
+      : artifact?.kind === 'document'
+        ? 'md'
+        : artifact?.kind === 'diff'
+          ? 'diff'
+          : artifact?.kind === 'genui'
+            ? 'json'
+            : (extMap[lang] ?? (lang || 'txt'));
+  if (safeBase.endsWith(`.${inferredExt}`)) return safeBase;
+  return `${safeBase}.${inferredExt}`;
+}
+
 export function FilesEditorPane({
   chatId,
   artifacts,
@@ -307,19 +363,22 @@ export function FilesEditorPane({
   onSelectArtifact,
   onUpdateArtifact,
   workspaceFiles: propWorkspaceFiles,
+  selectedFilePath,
+  fileSelectionNonce = 0,
+  onSelectFilePath,
   onWorkspaceFilesChange,
   onAskAiEdit,
   onOpenHtmlInPreview,
   themeMode = 'light',
 }: FilesEditorPaneProps) {
   const [section, setSection] = useState<PaneSection>(
-    artifacts.length > 0 && activeArtifactId ? 'artifacts' : 'files',
+    selectedFilePath ? 'files' : artifacts.length > 0 && activeArtifactId ? 'artifacts' : 'files',
   );
   const [viewMode, setViewMode] = useState<ViewMode>('code');
   const [files, setFiles] = useState<WorkspaceFileEntry[]>(propWorkspaceFiles ?? []);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [savedContents, setSavedContents] = useState<Record<string, string>>({});
-  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(selectedFilePath ?? null);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -329,9 +388,10 @@ export function FilesEditorPane({
   const [treeOpen, setTreeOpen] = useState(true);
   const [lineWrap, setLineWrap] = useState(false);
 
-  // Artifact versioning
+  // Artifact versioning + local unsaved draft buffer
   const [artifactVersions, setArtifactVersions] = useState<ArtifactRecord[]>([]);
   const [selectedVersionIdx, setSelectedVersionIdx] = useState<number>(0);
+  const [artifactDrafts, setArtifactDrafts] = useState<Record<string, string>>({});
 
   // CodeMirror refs + inline AI edit popover
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
@@ -353,6 +413,19 @@ export function FilesEditorPane({
     }
   }, [activeArtifactId]);
 
+  // Auto-switch to Workspace tab and select path when an external file path is targeted
+  useEffect(() => {
+    if (fileSelectionNonce < 0 || !selectedFilePath) return;
+    const cleanPath = selectedFilePath.replace(/^\/+/, '').replace(/^workspace\//, '');
+    if (!cleanPath) return;
+    setSection('files');
+    setActiveFilePath(cleanPath);
+    const parents = collectParentFolders(cleanPath);
+    if (parents.length > 0) {
+      setExpandedFolders((prev) => Array.from(new Set([...prev, ...parents])));
+    }
+  }, [selectedFilePath, fileSelectionNonce]);
+
   const activeArtifact = useMemo(() => {
     if (artifacts.length === 0) return null;
     if (activeArtifactId) {
@@ -361,18 +434,29 @@ export function FilesEditorPane({
     return artifacts[0];
   }, [artifacts, activeArtifactId]);
 
-  // Fetch artifact version history when activeArtifact changes
+  const activeArtifactRef = useRef(activeArtifact);
+  activeArtifactRef.current = activeArtifact;
+  const activeArtifactKeyId = activeArtifact?.id ?? null;
+  const activeArtifactKeyVersion = activeArtifact?.version ?? 0;
+
+  // Fetch artifact version history only when active artifact ID or server version changes
   useEffect(() => {
-    if (!activeArtifact) {
+    const initial = activeArtifactRef.current;
+    if (!activeArtifactKeyId || activeArtifactKeyVersion < 0 || !initial) {
       setArtifactVersions([]);
       setSelectedVersionIdx(0);
       return;
     }
     let cancelled = false;
-    setArtifactVersions([activeArtifact]);
+    setArtifactVersions((prev) => {
+      if (prev.some((v) => v.id === initial.id && v.version === initial.version)) {
+        return prev;
+      }
+      return [initial];
+    });
     setSelectedVersionIdx(0);
 
-    fetch(`/api/artifacts/${encodeURIComponent(activeArtifact.id)}`)
+    fetch(`/api/artifacts/${encodeURIComponent(activeArtifactKeyId)}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
@@ -395,11 +479,18 @@ export function FilesEditorPane({
     return () => {
       cancelled = true;
     };
-  }, [activeArtifact]);
+  }, [activeArtifactKeyId, activeArtifactKeyVersion]);
 
   const currentArtifactVersion = artifactVersions[selectedVersionIdx] ?? activeArtifact;
   const previousArtifactVersion =
     selectedVersionIdx > 0 ? artifactVersions[selectedVersionIdx - 1] : null;
+  const currentArtifactDraftKey = currentArtifactVersion
+    ? `${currentArtifactVersion.id}:v${currentArtifactVersion.version}`
+    : null;
+  const isViewingOlderArtifactVersion =
+    section === 'artifacts' &&
+    artifactVersions.length > 1 &&
+    selectedVersionIdx < artifactVersions.length - 1;
 
   const onWorkspaceFilesChangeRef = useRef(onWorkspaceFilesChange);
   onWorkspaceFilesChangeRef.current = onWorkspaceFilesChange;
@@ -473,7 +564,9 @@ export function FilesEditorPane({
 
   const activeContent =
     section === 'artifacts'
-      ? (currentArtifactVersion?.content ?? '')
+      ? currentArtifactDraftKey && artifactDrafts[currentArtifactDraftKey] !== undefined
+        ? artifactDrafts[currentArtifactDraftKey]
+        : (currentArtifactVersion?.content ?? '')
       : activeFilePath
         ? (fileContents[activeFilePath] ?? '')
         : '';
@@ -485,10 +578,14 @@ export function FilesEditorPane({
       : (activeFilePath ?? 'typescript');
 
   const isDirty =
-    section === 'files' &&
-    activeFilePath !== null &&
-    fileContents[activeFilePath] !== undefined &&
-    fileContents[activeFilePath] !== (savedContents[activeFilePath] ?? '');
+    section === 'files'
+      ? activeFilePath !== null &&
+        fileContents[activeFilePath] !== undefined &&
+        fileContents[activeFilePath] !== (savedContents[activeFilePath] ?? '')
+      : currentArtifactVersion !== null &&
+        currentArtifactDraftKey !== null &&
+        artifactDrafts[currentArtifactDraftKey] !== undefined &&
+        artifactDrafts[currentArtifactDraftKey] !== currentArtifactVersion.content;
 
   const isHtmlPreviewable =
     (section === 'artifacts' && currentArtifactVersion?.kind === 'html') ||
@@ -498,41 +595,104 @@ export function FilesEditorPane({
     (section === 'artifacts' && currentArtifactVersion?.kind === 'document') ||
     (section === 'files' && Boolean(activeFilePath && /\.(md|mdx)$/i.test(activeFilePath)));
 
+  const persistArtifactVersion = useCallback(
+    async (baseArtifact: ArtifactRecord, contentToSave: string, toastMessage?: string) => {
+      const res = await fetch('/api/artifacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: baseArtifact.id,
+          chatId,
+          title: baseArtifact.title,
+          kind: baseArtifact.kind,
+          language: baseArtifact.language ?? null,
+          content: contentToSave,
+          ...(baseArtifact.spec !== undefined ? { spec: baseArtifact.spec } : {}),
+        }),
+      });
+      if (!res.ok) throw new Error('Failed to save artifact');
+      const data = (await res.json().catch(() => ({}))) as { artifact?: ArtifactRecord };
+      const saved: ArtifactRecord = data.artifact ?? {
+        ...baseArtifact,
+        content: contentToSave,
+        version: baseArtifact.version + 1,
+        updatedAt: new Date().toISOString(),
+      };
+
+      setArtifactVersions((prev) => {
+        const filtered = prev.filter((v) => v.version !== saved.version);
+        const next = [...filtered, saved].sort((a, b) => a.version - b.version);
+        setSelectedVersionIdx(next.length - 1);
+        return next;
+      });
+      setArtifactDrafts((prev) => {
+        const next = { ...prev };
+        delete next[`${baseArtifact.id}:v${baseArtifact.version}`];
+        delete next[`${saved.id}:v${saved.version}`];
+        return next;
+      });
+      onUpdateArtifactRef.current?.(saved);
+      toast.success(toastMessage ?? `Saved v${saved.version} of ${saved.title}`);
+      return saved;
+    },
+    [chatId],
+  );
+
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
+      const liveContent =
+        viewMode === 'code' && editorViewRef.current
+          ? editorViewRef.current.state.doc.toString()
+          : activeContent;
+
       if (section === 'files' && activeFilePath) {
-        const content = fileContents[activeFilePath] ?? '';
         const res = await fetch('/api/sandbox/files', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chatId, path: activeFilePath, content }),
+          body: JSON.stringify({ chatId, path: activeFilePath, content: liveContent }),
         });
         if (!res.ok) throw new Error('Failed to save file');
-        setSavedContents((prev) => ({ ...prev, [activeFilePath]: content }));
+        setFileContents((prev) => ({ ...prev, [activeFilePath]: liveContent }));
+        setSavedContents((prev) => ({ ...prev, [activeFilePath]: liveContent }));
         toast.success(`Saved ${activeFilePath}`);
       } else if (section === 'artifacts' && currentArtifactVersion) {
-        const res = await fetch('/api/artifacts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: currentArtifactVersion.id,
-            chatId,
-            title: currentArtifactVersion.title,
-            kind: currentArtifactVersion.kind,
-            language: currentArtifactVersion.language,
-            content: currentArtifactVersion.content,
-          }),
-        });
-        if (!res.ok) throw new Error('Failed to save artifact');
-        toast.success(`Saved version of ${currentArtifactVersion.title}`);
+        await persistArtifactVersion(currentArtifactVersion, liveContent);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Save failed');
     } finally {
       setSaving(false);
     }
-  }, [section, activeFilePath, fileContents, chatId, currentArtifactVersion]);
+  }, [
+    viewMode,
+    activeContent,
+    section,
+    activeFilePath,
+    chatId,
+    currentArtifactVersion,
+    persistArtifactVersion,
+  ]);
+
+  const handleRestoreArtifactVersion = useCallback(async () => {
+    if (!currentArtifactVersion) return;
+    setSaving(true);
+    try {
+      const contentToRestore =
+        viewMode === 'code' && editorViewRef.current
+          ? editorViewRef.current.state.doc.toString()
+          : activeContent;
+      await persistArtifactVersion(
+        currentArtifactVersion,
+        contentToRestore,
+        `Restored v${currentArtifactVersion.version} of ${currentArtifactVersion.title}`,
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not restore version');
+    } finally {
+      setSaving(false);
+    }
+  }, [currentArtifactVersion, viewMode, activeContent, persistArtifactVersion]);
 
   const handleCreateFile = useCallback(async () => {
     const trimmed = newFileName.trim().replace(/^\/+/, '');
@@ -547,17 +707,27 @@ export function FilesEditorPane({
       if (!res.ok) throw new Error('Failed to create file');
       setFileContents((prev) => ({ ...prev, [trimmed]: '' }));
       setSavedContents((prev) => ({ ...prev, [trimmed]: '' }));
+      const parents = collectParentFolders(trimmed);
+      if (parents.length > 0) {
+        setExpandedFolders((prev) => Array.from(new Set([...prev, ...parents])));
+      }
+      setSection('files');
+      setViewMode('code');
       setActiveFilePath(trimmed);
+      onSelectFilePath?.(trimmed);
       setNewFileName('');
       setCreatingFile(false);
       await loadWorkspaceFiles();
+      window.requestAnimationFrame(() => {
+        editorViewRef.current?.focus();
+      });
       toast.success(`Created ${trimmed}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not create file');
     } finally {
       setSaving(false);
     }
-  }, [newFileName, chatId, loadWorkspaceFiles]);
+  }, [newFileName, chatId, loadWorkspaceFiles, onSelectFilePath]);
 
   const handleDeleteFile = useCallback(
     async (filePath: string) => {
@@ -594,12 +764,14 @@ export function FilesEditorPane({
   sectionRef.current = section;
   const currentArtifactRef = useRef(currentArtifactVersion);
   currentArtifactRef.current = currentArtifactVersion;
+  const currentArtifactDraftKeyRef = useRef(currentArtifactDraftKey);
+  currentArtifactDraftKeyRef.current = currentArtifactDraftKey;
   const onUpdateArtifactRef = useRef(onUpdateArtifact);
   onUpdateArtifactRef.current = onUpdateArtifact;
 
   const activeEditorKey =
     section === 'artifacts'
-      ? `artifact:${currentArtifactVersion?.id ?? 'none'}:v${selectedVersionIdx}:${themeMode}:${activeLanguageHint}:wrap${lineWrap ? 1 : 0}`
+      ? `artifact:${currentArtifactVersion?.id ?? 'none'}:v${currentArtifactVersion?.version ?? selectedVersionIdx}:${themeMode}:${activeLanguageHint}:wrap${lineWrap ? 1 : 0}`
       : `file:${activeFilePath ?? 'none'}:${themeMode}:${activeLanguageHint}:wrap${lineWrap ? 1 : 0}`;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: editor rebuilds cleanly on key/mode changes
@@ -615,15 +787,10 @@ export function FilesEditorPane({
           setFileContents((prev) =>
             prev[pathKey] === nextDoc ? prev : { ...prev, [pathKey]: nextDoc },
           );
-        } else if (sectionRef.current === 'artifacts' && currentArtifactRef.current) {
-          const updated: ArtifactRecord = {
-            ...currentArtifactRef.current,
-            content: nextDoc,
-            updatedAt: new Date().toISOString(),
-          };
-          onUpdateArtifactRef.current?.(updated);
-          setArtifactVersions((prev) =>
-            prev.map((v, i) => (i === selectedVersionIdx ? updated : v)),
+        } else if (sectionRef.current === 'artifacts' && currentArtifactDraftKeyRef.current) {
+          const draftKey = currentArtifactDraftKeyRef.current;
+          setArtifactDrafts((prev) =>
+            prev[draftKey] === nextDoc ? prev : { ...prev, [draftKey]: nextDoc },
           );
         }
       }
@@ -731,23 +898,47 @@ export function FilesEditorPane({
   ]);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(activeContent);
+    const buffer =
+      viewMode === 'code' && editorViewRef.current
+        ? editorViewRef.current.state.doc.toString()
+        : activeContent;
+    await navigator.clipboard.writeText(buffer);
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
   };
 
   const handleDownload = () => {
+    const buffer =
+      viewMode === 'code' && editorViewRef.current
+        ? editorViewRef.current.state.doc.toString()
+        : activeContent;
+    if (section === 'files' && !activeFilePath) {
+      toast.info('Select a workspace file to download.');
+      return;
+    }
+    if (section === 'artifacts' && !currentArtifactVersion) {
+      toast.info('Select an artifact to download.');
+      return;
+    }
     const name =
       section === 'artifacts'
-        ? `${(currentArtifactVersion?.title ?? 'artifact').replace(/\s+/g, '-').toLowerCase()}.${currentArtifactVersion?.kind === 'html' ? 'html' : (currentArtifactVersion?.language ?? 'txt')}`
+        ? getArtifactDownloadFilename(currentArtifactVersion)
         : (activeFilePath?.split('/').pop() ?? 'file.txt');
-    const blob = new Blob([activeContent], { type: 'text/plain;charset=utf-8' });
+    const mimeType = name.endsWith('.html')
+      ? 'text/html;charset=utf-8'
+      : name.endsWith('.json')
+        ? 'application/json;charset=utf-8'
+        : 'text/plain;charset=utf-8';
+    const blob = new Blob([buffer], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const submitAiSelectionEdit = () => {
@@ -1116,7 +1307,7 @@ export function FilesEditorPane({
 
             {section === 'artifacts' && artifactVersions.length > 1 && (
               <div className="flex items-center gap-2">
-                <History className="h-3.5 w-3.5 text-muted-foreground" />
+                <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <input
                   type="range"
                   min={0}
@@ -1126,9 +1317,23 @@ export function FilesEditorPane({
                   aria-label="Artifact version history"
                   className="h-1.5 w-24 accent-[var(--accent)]"
                 />
-                <span className="font-mono text-[10px] text-muted-foreground">
-                  v{selectedVersionIdx + 1}/{artifactVersions.length}
+                <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                  v{currentArtifactVersion?.version ?? selectedVersionIdx + 1}/
+                  {artifactVersions[artifactVersions.length - 1]?.version ??
+                    artifactVersions.length}
                 </span>
+                {isViewingOlderArtifactVersion && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRestoreArtifactVersion()}
+                    disabled={saving}
+                    className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner,8px)] border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-0.5 text-[10.5px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
+                    title="Persist this older version as the new latest artifact version"
+                  >
+                    <RotateCcw className="h-3 w-3 shrink-0" />
+                    Restore v{currentArtifactVersion?.version ?? selectedVersionIdx + 1}
+                  </button>
+                )}
               </div>
             )}
           </div>

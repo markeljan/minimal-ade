@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { POST as postRelayGrant } from '@/app/api/sandbox/relay-grant/route';
-import { browserOpen, mintRelayGrant, validateExternalUrl } from '@/lib/sandbox/browser-service';
 import {
+  browserOpen,
+  mintRelayGrant,
+  readResponseTextBounded,
+  validateExternalUrl,
+  validateExternalUrlWithDns,
+} from '@/lib/sandbox/browser-service';
+import {
+  authorizeSandboxChatAccess,
   createWorkspaceBashTool,
   deleteFile,
   execCommand,
@@ -14,7 +21,7 @@ import {
   writeFile,
 } from '@/lib/sandbox/manager';
 
-const ENV_KEYS = ['SCREEN_RELAY_URL', 'SCREEN_RELAY_TOKEN', 'VERCEL'] as const;
+const ENV_KEYS = ['SCREEN_RELAY_URL', 'SCREEN_RELAY_TOKEN', 'VERCEL', 'DATABASE_URL'] as const;
 type EnvKey = (typeof ENV_KEYS)[number];
 
 const originalFetch = globalThis.fetch;
@@ -32,6 +39,7 @@ describe('dual-tier sandbox, SSRF protection, and screen-relay grant security', 
     for (const key of ENV_KEYS) {
       savedEnv[key] = process.env[key];
     }
+    delete process.env.DATABASE_URL;
     registerWorkspacePersistence(null);
     globalThis.fetch = originalFetch;
   });
@@ -171,42 +179,52 @@ describe('dual-tier sandbox, SSRF protection, and screen-relay grant security', 
     expect(preview.mode).toBe('preview');
     expect(preview.backend).toBe('workspace-preview');
     expect(preview.htmlPreview).toContain('Minimal ADE Sandbox Ready');
+    // DNS-verified SSRF guard rejects private IPs and bounded body reader enforces byte cap
+    const dnsBlocked = await validateExternalUrlWithDns('http://169.254.169.254/latest/meta-data/');
+    expect(dnsBlocked.ok).toBe(false);
+
+    const oversizedBody = new Response('A'.repeat(2048));
+    const bounded = await readResponseTextBounded(oversizedBody, 64);
+    expect(Buffer.byteLength(bounded, 'utf8')).toBeLessThanOrEqual(64);
   });
 
   it('STRICT SECURITY: mintRelayGrant and /api/sandbox/relay-grant NEVER expose raw SCREEN_RELAY_TOKEN', async () => {
     const rawSessionToken = 'deadbeef'.repeat(8); // 64-hex raw session secret
-    const scopedWatchGrant = 'scoped_watch_grant_token_safe_12345';
-    const scopedControlGrant = 'scoped_control_grant_token_safe_67890';
+    const scopedWatchTicket = 'scoped_watch_ticket_safe_12345';
+    const scopedControlTicket = 'scoped_control_ticket_safe_67890';
 
     process.env.SCREEN_RELAY_URL = 'https://relay.sandbox.test';
     process.env.SCREEN_RELAY_TOKEN = rawSessionToken;
 
     let capturedAuth = '';
     let capturedUrl = '';
+    let ticketCallCount = 0;
 
-    // 1. Happy path: watch role mints scoped token and sends Bearer auth server-side only
+    // 1. Happy path: watch role mints short-lived /tickets grant and sends Bearer auth server-side only
     setMockFetch(async (input, init) => {
       capturedUrl =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       capturedAuth = new Headers(init?.headers).get('authorization') ?? '';
+      ticketCallCount += 1;
       return new Response(
         JSON.stringify({
-          token: capturedUrl.includes('/grants/control') ? scopedControlGrant : scopedWatchGrant,
-          ttl: 300,
+          ticket: ticketCallCount === 1 ? scopedWatchTicket : scopedControlTicket,
+          expires_in: 300,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     });
 
     const watchGrant = await mintRelayGrant('relay-sec-chat', 'watch', 300);
-    expect(capturedUrl).toBe('https://relay.sandbox.test/grants/watch?ttl=300');
+    expect(capturedUrl).toBe('https://relay.sandbox.test/tickets');
     expect(capturedAuth).toBe(`Bearer ${rawSessionToken}`);
     expect(watchGrant.ok).toBe(true);
-    expect(watchGrant.grantToken).toBe(scopedWatchGrant);
+    expect(watchGrant.grantToken).toBe(scopedWatchTicket);
+    expect(watchGrant.authProtocol).toBe('ticket');
     expect(watchGrant.wsUrl).toBe('wss://relay.sandbox.test/stream?view=1');
     expect(JSON.stringify(watchGrant)).not.toContain(rawSessionToken);
 
-    // 2. Control role via HTTP route /api/sandbox/relay-grant
+    // 2. Control role via HTTP route /api/sandbox/relay-grant (real screen-relay@0.1.2 uses /stream + ticket subprotocol)
     const routeRes = await postRelayGrant(
       new Request('http://localhost:3000/api/sandbox/relay-grant', {
         method: 'POST',
@@ -220,17 +238,19 @@ describe('dual-tier sandbox, SSRF protection, and screen-relay grant security', 
     const routeJson = JSON.parse(routeBodyText) as {
       ok: boolean;
       grantToken: string;
+      authProtocol: string;
       wsUrl: string;
       role: string;
     };
     expect(routeJson.ok).toBe(true);
     expect(routeJson.role).toBe('control');
-    expect(routeJson.grantToken).toBe(scopedControlGrant);
-    expect(routeJson.wsUrl).toBe('wss://relay.sandbox.test/stream?take=1');
+    expect(routeJson.grantToken).toBe(scopedControlTicket);
+    expect(routeJson.authProtocol).toBe('ticket');
+    expect(routeJson.wsUrl).toBe('wss://relay.sandbox.test/stream');
 
     // 3. Adversarial case: if upstream relay mistakenly echoes raw session token, mintRelayGrant MUST reject it!
     setMockFetch(async () => {
-      return new Response(JSON.stringify({ token: rawSessionToken, ttl: 300 }), {
+      return new Response(JSON.stringify({ ticket: rawSessionToken, expires_in: 300 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -264,5 +284,40 @@ describe('dual-tier sandbox, SSRF protection, and screen-relay grant security', 
     const errText = await errRes.text();
     expect(errText).not.toContain(rawSessionToken);
     expect((JSON.parse(errText) as { ok: boolean }).ok).toBe(false);
+  });
+
+  it('isolates default workspaces per user and does not resurrect starter files after deleting all files', async () => {
+    // 1. Per-user default workspace isolation
+    const userAReq = new Request('http://localhost:3000/api/sandbox', {
+      headers: { 'x-ade-guest-id': 'guest_isolation_a' },
+    });
+    const accessA = await authorizeSandboxChatAccess(userAReq, 'default', 'write');
+    expect(accessA.allowed).toBe(true);
+    expect(accessA.effectiveChatId).toBe('default:guest_isolation_a');
+
+    // Cross-user access to another user's default:<otherId> MUST be rejected with 403
+    const userBReq = new Request('http://localhost:3000/api/sandbox', {
+      headers: { 'x-ade-guest-id': 'guest_isolation_b' },
+    });
+    const crossAccess = await authorizeSandboxChatAccess(
+      userBReq,
+      'default:guest_isolation_a',
+      'read',
+    );
+    expect(crossAccess.allowed).toBe(false);
+    expect(crossAccess.status).toBe(403);
+
+    // 2. Deleting every starter file must keep the workspace empty without resurrecting starters
+    const chatId = `delete-all-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const initial = await listFiles(chatId, 'just-bash');
+    expect(initial.length).toBeGreaterThanOrEqual(4);
+
+    for (const file of initial) {
+      const delRes = await deleteFile(chatId, file.path, 'just-bash');
+      expect(delRes.deleted).toBe(true);
+    }
+
+    const afterDeleteAll = await listFiles(chatId, 'just-bash');
+    expect(afterDeleteAll).toEqual([]);
   });
 });

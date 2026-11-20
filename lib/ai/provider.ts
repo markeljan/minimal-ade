@@ -18,11 +18,12 @@ import {
   IMAGE_GATEWAY_MODEL_ID,
   IMAGE_OPENAI_MODEL_ID,
   isOpenAIModelId,
-  REALTIME_MODEL_ID,
   STT_MODEL_ID,
   stripProviderPrefix,
   TTS_MODEL_ID,
+  toGatewayRealtimeModelId,
   toOpenAIDirectModelId,
+  toOpenAIDirectRealtimeModelId,
 } from '@/lib/ai/models';
 import type { BillingSource, BillingSourceInfo, ProviderOverrideConfig } from '@/lib/types';
 
@@ -36,6 +37,8 @@ export interface UserVercelAuth {
   /** Token expiration timestamp (epoch ms, epoch seconds, ISO string, or Date). */
   expiresAt?: number | string | Date | null;
   teamIdOrSlug?: string;
+  /** Better Auth OAuth provider ID (`'vercel'` or `'vercel-connect'`). */
+  providerId?: string;
   onRefreshed?: (tokens: RefreshedVercelOAuthToken) => Promise<void> | void;
 }
 
@@ -491,7 +494,9 @@ async function resolveUserVercelOAuthToken(
       return false;
     }
     didRefresh = true;
-    const refreshed = await refreshVercelOAuthToken(refreshToken);
+    const refreshed = await refreshVercelOAuthToken(refreshToken, {
+      providerId: userVercelAuth.providerId,
+    });
     if (!refreshed?.accessToken) {
       return false;
     }
@@ -599,31 +604,21 @@ async function resolveBackend(
   const fallbackNotes: string[] = [];
 
   // -------------------------------------------------------------------------
-  // Tier 1 — Custom OpenAI-Compatible Endpoint (UI override or env)
+  // Tier 1a — Explicit User Custom OpenAI-Compatible Endpoint (UI override)
   // -------------------------------------------------------------------------
-  const isExplicitByokMode = parsed.mode === 'byok-gateway' || parsed.mode === 'byok-openai';
-  const effectiveCustomBaseUrl =
-    parsed.customBaseUrl ?? (!isExplicitByokMode ? env.customBaseUrl : undefined);
-
-  if (allowCustom && effectiveCustomBaseUrl) {
-    const customApiKey = parsed.customBaseUrl
-      ? parsed.customApiKey
-      : (parsed.customApiKey ?? env.customApiKey);
+  if (allowCustom && parsed.customBaseUrl) {
     const customModel =
-      (parsed.customBaseUrl ? parsed.customModel : (parsed.customModel ?? env.customModel)) ??
-      explicitModelId ??
-      opts.defaultModelOverride ??
-      DEFAULT_MODEL_ID;
+      parsed.customModel ?? explicitModelId ?? opts.defaultModelOverride ?? DEFAULT_MODEL_ID;
 
     return {
       kind: 'custom',
-      baseUrl: effectiveCustomBaseUrl,
-      apiKey: customApiKey,
+      baseUrl: parsed.customBaseUrl,
+      apiKey: parsed.customApiKey,
       modelId: customModel,
       headers: parsed.headers,
       billingSource: 'custom-endpoint',
       billingInfo: getBillingSourceInfo('custom-endpoint', {
-        providerName: safeHostLabel(effectiveCustomBaseUrl),
+        providerName: safeHostLabel(parsed.customBaseUrl),
         detail: customModel,
       }),
     };
@@ -631,6 +626,7 @@ async function resolveBackend(
 
   // -------------------------------------------------------------------------
   // Tier 2a — User BYOK API Key (`vck_*` -> AI Gateway, otherwise OpenAI)
+  // Beats host env `OPENAI_COMPATIBLE_BASE_URL` so user keys are never silently overridden.
   // -------------------------------------------------------------------------
   if (parsed.byokApiKey && parsed.byokKind) {
     if (parsed.byokKind === 'gateway') {
@@ -671,6 +667,32 @@ async function resolveBackend(
       billingSource: 'user-byok-openai',
       billingInfo: getBillingSourceInfo('user-byok-openai', { detail: directModelId }),
       fallbackReason: fallbackNotes.join(' ') || undefined,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Tier 1b — Host Env Custom OpenAI-Compatible Endpoint (`OPENAI_COMPATIBLE_BASE_URL`)
+  // -------------------------------------------------------------------------
+  const isExplicitByokMode = parsed.mode === 'byok-gateway' || parsed.mode === 'byok-openai';
+  if (allowCustom && !isExplicitByokMode && env.customBaseUrl) {
+    const customModel =
+      parsed.customModel ??
+      env.customModel ??
+      explicitModelId ??
+      opts.defaultModelOverride ??
+      DEFAULT_MODEL_ID;
+
+    return {
+      kind: 'custom',
+      baseUrl: env.customBaseUrl,
+      apiKey: parsed.customApiKey ?? env.customApiKey,
+      modelId: customModel,
+      headers: parsed.headers,
+      billingSource: 'custom-endpoint',
+      billingInfo: getBillingSourceInfo('custom-endpoint', {
+        providerName: safeHostLabel(env.customBaseUrl),
+        detail: customModel,
+      }),
     };
   }
 
@@ -1062,13 +1084,13 @@ export async function resolveSpeechModel(
 export async function resolveRealtimeTokenConfig(
   opts: ResolveProviderOptions = {},
 ): Promise<ResolvedRealtimeTokenConfig> {
-  const requested = trimNonEmpty(opts.modelId) ?? REALTIME_MODEL_ID;
+  const gatewayRealtimeModelId = toGatewayRealtimeModelId(opts.modelId);
 
   let backend: InternalResolvedBackend;
   try {
     backend = await resolveBackend({
       ...opts,
-      modelId: requested,
+      modelId: gatewayRealtimeModelId,
       allowCustom: false,
     });
   } catch (error) {
@@ -1080,7 +1102,7 @@ export async function resolveRealtimeTokenConfig(
     return {
       supported: false,
       transport: 'unsupported',
-      modelId: requested,
+      modelId: gatewayRealtimeModelId,
       billingSource,
       billingInfo: getBillingSourceInfo(billingSource),
       reason: isCustomOnly
@@ -1097,13 +1119,13 @@ export async function resolveRealtimeTokenConfig(
     return {
       supported: true,
       transport: 'gateway',
-      modelId: requested,
+      modelId: gatewayRealtimeModelId,
       billingSource: backend.billingSource,
       billingInfo: backend.billingInfo,
       fallbackReason: backend.fallbackReason,
       mintToken: async (tokenOpts) => {
         const result = await backend.provider.experimental_realtime.getToken({
-          model: requested,
+          model: gatewayRealtimeModelId,
           expiresAfterSeconds: tokenOpts?.expiresAfterSeconds,
         });
         return {
@@ -1116,9 +1138,7 @@ export async function resolveRealtimeTokenConfig(
   }
 
   if (backend.kind === 'openai') {
-    const directRealtimeId = isOpenAIModelId(requested)
-      ? stripProviderPrefix(requested)
-      : stripProviderPrefix(REALTIME_MODEL_ID);
+    const directRealtimeId = toOpenAIDirectRealtimeModelId(opts.modelId);
 
     return {
       supported: true,
@@ -1144,7 +1164,7 @@ export async function resolveRealtimeTokenConfig(
   return {
     supported: false,
     transport: 'unsupported',
-    modelId: requested,
+    modelId: gatewayRealtimeModelId,
     billingSource: backend.billingSource,
     billingInfo: backend.billingInfo,
     reason: 'Realtime voice requires Vercel AI Gateway or OpenAI credentials.',
@@ -1276,20 +1296,18 @@ export async function getProviderDiagnostics(
   }
 
   const isExplicitByokMode = parsed.mode === 'byok-gateway' || parsed.mode === 'byok-openai';
-  const effectiveCustomBaseUrl =
-    parsed.customBaseUrl ?? (!isExplicitByokMode ? env.customBaseUrl : undefined);
+  const envCustomBaseUrl = !isExplicitByokMode ? env.customBaseUrl : undefined;
+  const configuredCustomBaseUrl = parsed.customBaseUrl ?? envCustomBaseUrl;
 
   let activeBillingSource: BillingSource = 'unconfigured';
   let activeBillingInfo: BillingSourceInfo = getBillingSourceInfo('unconfigured');
   let defaultModelId = DEFAULT_MODEL_ID;
 
-  if (effectiveCustomBaseUrl) {
+  if (parsed.customBaseUrl) {
     activeBillingSource = 'custom-endpoint';
-    defaultModelId =
-      (parsed.customBaseUrl ? parsed.customModel : (parsed.customModel ?? env.customModel)) ??
-      DEFAULT_MODEL_ID;
+    defaultModelId = parsed.customModel ?? DEFAULT_MODEL_ID;
     activeBillingInfo = getBillingSourceInfo('custom-endpoint', {
-      providerName: safeHostLabel(effectiveCustomBaseUrl),
+      providerName: safeHostLabel(parsed.customBaseUrl),
       detail: defaultModelId,
     });
   } else if (parsed.byokApiKey && parsed.byokKind === 'gateway') {
@@ -1300,6 +1318,13 @@ export async function getProviderDiagnostics(
     activeBillingSource = 'user-byok-openai';
     defaultModelId = DEFAULT_OPENAI_MODEL_ID;
     activeBillingInfo = getBillingSourceInfo('user-byok-openai');
+  } else if (envCustomBaseUrl) {
+    activeBillingSource = 'custom-endpoint';
+    defaultModelId = parsed.customModel ?? env.customModel ?? DEFAULT_MODEL_ID;
+    activeBillingInfo = getBillingSourceInfo('custom-endpoint', {
+      providerName: safeHostLabel(envCustomBaseUrl),
+      detail: defaultModelId,
+    });
   } else if (userOAuthUsable) {
     activeBillingSource = 'user-vercel-oauth';
     defaultModelId = DEFAULT_MODEL_ID;
@@ -1325,9 +1350,9 @@ export async function getProviderDiagnostics(
       tier: 1,
       id: 'custom-endpoint',
       label: 'Custom OpenAI-Compatible Endpoint',
-      configured: Boolean(effectiveCustomBaseUrl),
+      configured: Boolean(configuredCustomBaseUrl),
       active: activeBillingSource === 'custom-endpoint',
-      detail: effectiveCustomBaseUrl ? safeHostLabel(effectiveCustomBaseUrl) : undefined,
+      detail: configuredCustomBaseUrl ? safeHostLabel(configuredCustomBaseUrl) : undefined,
     },
     {
       tier: 2,

@@ -14,6 +14,7 @@ export const maxDuration = 60;
 interface McpRequestContext {
   authorizedByMcpToken: boolean;
   sessionUserId: string;
+  isAuthenticated: boolean;
 }
 
 const mcpRequestStorage = new AsyncLocalStorage<McpRequestContext>();
@@ -31,31 +32,81 @@ function verifyBearerToken(authHeader: string | null, expectedToken: string): bo
   return timingSafeEqual(providedHash, expectedHash);
 }
 
+/**
+ * Fail-closed authorization guard for remote MCP workspace tools:
+ * - Valid `ADE_MCP_TOKEN` Bearer auth grants scoped server-to-server access.
+ * - Without `ADE_MCP_TOKEN`:
+ *   - `'default'` (or omitted `chatId`) is isolated per caller as `default:${session.userId}`.
+ *   - Mutating tools (`workspace_write_file`, `workspace_bash`) require an authenticated
+ *     session owner (never unauthenticated callers, never another user's public chat,
+ *     and never nonexistent/unowned arbitrary chat IDs).
+ *   - Read tools fail-closed on DB errors and forbid accessing nonexistent/unowned or
+ *     another user's private chats.
+ */
 async function authorizeWorkspaceChatAccess(
-  chatId?: string,
+  rawChatId: string | undefined,
+  mode: 'read' | 'write',
 ): Promise<{ ok: true; chatId: string } | { ok: false; error: string }> {
-  const targetChatId = chatId?.trim() || 'default';
-  if (targetChatId === 'default') {
-    return { ok: true, chatId: targetChatId };
-  }
-
   const ctx = mcpRequestStorage.getStore();
-  if (ctx?.authorizedByMcpToken) {
-    return { ok: true, chatId: targetChatId };
+  if (!ctx) {
+    return { ok: false, error: 'Unauthorized: missing MCP request context.' };
   }
 
-  const existingChat = await getChatById(targetChatId).catch(() => null);
-  if (existingChat && existingChat.visibility !== 'public') {
-    if (!ctx || existingChat.userId !== ctx.sessionUserId) {
+  const trimmed = rawChatId?.trim();
+  const isDefaultWorkspace = !trimmed || trimmed === 'default';
+
+  if (ctx.authorizedByMcpToken) {
+    return { ok: true, chatId: isDefaultWorkspace ? 'default' : trimmed };
+  }
+
+  if (isDefaultWorkspace) {
+    if (mode === 'write' && !ctx.isAuthenticated) {
       return {
         ok: false,
         error:
-          'Forbidden: private chat workspace requires matching session auth or Bearer ADE_MCP_TOKEN.',
+          'Forbidden: mutating MCP tools require valid Bearer ADE_MCP_TOKEN or an authenticated session.',
       };
     }
+    return { ok: true, chatId: `default:${ctx.sessionUserId}` };
   }
 
-  return { ok: true, chatId: targetChatId };
+  let existingChat: Awaited<ReturnType<typeof getChatById>>;
+  try {
+    existingChat = await getChatById(trimmed);
+  } catch {
+    return {
+      ok: false,
+      error: 'Unable to verify chat workspace ownership (storage error).',
+    };
+  }
+
+  if (!existingChat) {
+    return {
+      ok: false,
+      error: 'Forbidden: target chat workspace does not exist or requires Bearer ADE_MCP_TOKEN.',
+    };
+  }
+
+  if (mode === 'write') {
+    if (!ctx.isAuthenticated || existingChat.userId !== ctx.sessionUserId) {
+      return {
+        ok: false,
+        error:
+          'Forbidden: mutating a chat workspace requires the authenticated chat owner or Bearer ADE_MCP_TOKEN.',
+      };
+    }
+    return { ok: true, chatId: trimmed };
+  }
+
+  if (existingChat.visibility !== 'public' && existingChat.userId !== ctx.sessionUserId) {
+    return {
+      ok: false,
+      error:
+        'Forbidden: private chat workspace requires matching session auth or Bearer ADE_MCP_TOKEN.',
+    };
+  }
+
+  return { ok: true, chatId: trimmed };
 }
 
 const baseHandler = createMcpHandler(
@@ -64,13 +115,17 @@ const baseHandler = createMcpHandler(
       'workspace_list_files',
       {
         title: 'List Workspace Files',
-        description: 'List files in a Minimal ADE session workspace (defaults to "default").',
+        description:
+          'List files in a Minimal ADE session workspace (defaults to caller-scoped workspace).',
         inputSchema: z.object({
-          chatId: z.string().optional().describe('ADE session/chat ID (defaults to "default")'),
+          chatId: z
+            .string()
+            .optional()
+            .describe('ADE session/chat ID (defaults to caller workspace)'),
         }),
       },
       async ({ chatId }) => {
-        const auth = await authorizeWorkspaceChatAccess(chatId);
+        const auth = await authorizeWorkspaceChatAccess(chatId, 'read');
         if (!auth.ok) {
           return { isError: true, content: [{ type: 'text', text: auth.error }] };
         }
@@ -105,12 +160,15 @@ const baseHandler = createMcpHandler(
         title: 'Read Workspace File',
         description: 'Read a text file from a Minimal ADE session workspace.',
         inputSchema: z.object({
-          chatId: z.string().optional().describe('ADE session/chat ID (defaults to "default")'),
+          chatId: z
+            .string()
+            .optional()
+            .describe('ADE session/chat ID (defaults to caller workspace)'),
           path: z.string().min(1).describe('Relative workspace path, e.g. "README.md"'),
         }),
       },
       async ({ chatId, path }) => {
-        const auth = await authorizeWorkspaceChatAccess(chatId);
+        const auth = await authorizeWorkspaceChatAccess(chatId, 'read');
         if (!auth.ok) {
           return { isError: true, content: [{ type: 'text', text: auth.error }] };
         }
@@ -143,15 +201,19 @@ const baseHandler = createMcpHandler(
       'workspace_write_file',
       {
         title: 'Write Workspace File',
-        description: 'Create or update a file inside a Minimal ADE session workspace.',
+        description:
+          'Create or update a file inside a Minimal ADE session workspace (requires owner auth or ADE_MCP_TOKEN).',
         inputSchema: z.object({
-          chatId: z.string().optional().describe('ADE session/chat ID (defaults to "default")'),
+          chatId: z
+            .string()
+            .optional()
+            .describe('ADE session/chat ID (defaults to caller workspace)'),
           path: z.string().min(1).describe('Relative workspace file path'),
           content: z.string().describe('UTF-8 content to write'),
         }),
       },
       async ({ chatId, path, content }) => {
-        const auth = await authorizeWorkspaceChatAccess(chatId);
+        const auth = await authorizeWorkspaceChatAccess(chatId, 'write');
         if (!auth.ok) {
           return { isError: true, content: [{ type: 'text', text: auth.error }] };
         }
@@ -195,19 +257,17 @@ const baseHandler = createMcpHandler(
       {
         title: 'Run Workspace Shell Command',
         description:
-          'Run a non-destructive shell command in the Minimal ADE workspace (Tier 1 just-bash or Tier 2 Vercel Sandbox). Destructive commands are blocked over unapproved remote MCP calls.',
+          'Run a non-destructive shell command in the Minimal ADE workspace (requires owner auth or ADE_MCP_TOKEN; destructive commands are blocked).',
         inputSchema: z.object({
-          chatId: z.string().optional().describe('ADE session/chat ID (defaults to "default")'),
+          chatId: z
+            .string()
+            .optional()
+            .describe('ADE session/chat ID (defaults to caller workspace)'),
           command: z.string().min(1).describe('Shell command to execute'),
           cwd: z.string().optional().describe('Optional relative working directory'),
         }),
       },
       async ({ chatId, command, cwd }) => {
-        const auth = await authorizeWorkspaceChatAccess(chatId);
-        if (!auth.ok) {
-          return { isError: true, content: [{ type: 'text', text: auth.error }] };
-        }
-
         if (isDestructiveCommand(command)) {
           return {
             isError: true,
@@ -218,6 +278,11 @@ const baseHandler = createMcpHandler(
               },
             ],
           };
+        }
+
+        const auth = await authorizeWorkspaceChatAccess(chatId, 'write');
+        if (!auth.ok) {
+          return { isError: true, content: [{ type: 'text', text: auth.error }] };
         }
 
         const result = await execCommand(auth.chatId, command, { cwd });
@@ -250,12 +315,15 @@ const baseHandler = createMcpHandler(
         description:
           'Navigate the Minimal ADE embedded browser to a public URL (or workspace://index.html) and return its accessibility tree snapshot and readable summary.',
         inputSchema: z.object({
-          chatId: z.string().optional().describe('ADE session/chat ID (defaults to "default")'),
+          chatId: z
+            .string()
+            .optional()
+            .describe('ADE session/chat ID (defaults to caller workspace)'),
           url: z.string().min(1).describe('Public http(s) URL or "workspace://index.html"'),
         }),
       },
       async ({ chatId, url }) => {
-        const auth = await authorizeWorkspaceChatAccess(chatId);
+        const auth = await authorizeWorkspaceChatAccess(chatId, 'read');
         if (!auth.ok) {
           return { isError: true, content: [{ type: 'text', text: auth.error }] };
         }
@@ -315,6 +383,7 @@ async function handleMcpRequest(request: Request): Promise<Response> {
     {
       authorizedByMcpToken,
       sessionUserId: session.userId,
+      isAuthenticated: session.isAuthenticated,
     },
     () => baseHandler(request),
   );

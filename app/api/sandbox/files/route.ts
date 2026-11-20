@@ -41,14 +41,18 @@ function parseTierParam(value: string | null): SandboxTier | undefined {
 export async function GET(request: Request): Promise<Response> {
   try {
     const { searchParams } = new URL(request.url);
-    const chatId = normalizeChatId(searchParams.get('chatId'));
+    const requestedChatId = normalizeChatId(searchParams.get('chatId'));
     const filePath = searchParams.get('path');
     const tier = parseTierParam(searchParams.get('tier'));
 
-    const access = await authorizeSandboxChatAccess(request, chatId, 'read');
+    const access = await authorizeSandboxChatAccess(request, requestedChatId, 'read');
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const chatId = access.effectiveChatId ?? requestedChatId;
 
     if (filePath) {
       try {
@@ -92,13 +96,17 @@ export async function POST(request: Request): Promise<Response> {
       );
     }
 
-    const chatId = normalizeChatId(parsed.data.chatId);
+    const requestedChatId = normalizeChatId(parsed.data.chatId);
     const tier = parsed.data.tier;
 
-    const access = await authorizeSandboxChatAccess(request, chatId, 'write');
+    const access = await authorizeSandboxChatAccess(request, requestedChatId, 'write');
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const chatId = access.effectiveChatId ?? requestedChatId;
 
     if (parsed.data.files) {
       for (const [relPath, fileContent] of Object.entries(parsed.data.files)) {
@@ -170,11 +178,15 @@ export async function DELETE(request: Request): Promise<Response> {
 
     const access = await authorizeSandboxChatAccess(request, chatId, 'write');
     if (!access.allowed) {
-      return NextResponse.json({ ok: false, error: access.error }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, error: access.error },
+        { status: access.status ?? 403 },
+      );
     }
+    const scopedChatId = access.effectiveChatId ?? chatId;
 
-    const result = await deleteFile(chatId, filePath, tier);
-    const fileMap = await getAllFilesRecord(chatId, tier);
+    const result = await deleteFile(scopedChatId, filePath, tier);
+    const fileMap = await getAllFilesRecord(scopedChatId, tier);
 
     try {
       metric('ade.sandbox.actions', 1, { action: 'delete_file', tier: result.tier });

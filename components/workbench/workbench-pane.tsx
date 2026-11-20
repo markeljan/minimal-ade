@@ -44,12 +44,16 @@ export interface WorkbenchPaneProps {
   onChangeSandboxTier: (tier: SandboxTier) => void;
   workspaceFileMap?: Record<string, string>;
   queuedTerminalCommand?: { id: string; command: string } | null;
+  onQueuedCommandConsumed?: (id: string) => void;
   // Files & Artifacts
   artifacts: ArtifactRecord[];
   activeArtifactId?: string | null;
   onSelectArtifact?: (id: string) => void;
   onUpdateArtifact?: (artifact: ArtifactRecord) => void;
   workspaceFiles: WorkspaceFileEntry[];
+  selectedFilePath?: string | null;
+  fileSelectionNonce?: number;
+  onSelectFilePath?: (path: string | null) => void;
   onWorkspaceFilesChange: (files: WorkspaceFileEntry[]) => void;
   onAskAiEdit?: (req: InlineAiEditRequest) => void;
   onOpenHtmlInPreview?: (html: string, title?: string) => void;
@@ -100,11 +104,15 @@ export function WorkbenchPane({
   onChangeSandboxTier,
   workspaceFileMap,
   queuedTerminalCommand,
+  onQueuedCommandConsumed,
   artifacts,
   activeArtifactId,
   onSelectArtifact,
   onUpdateArtifact,
   workspaceFiles,
+  selectedFilePath,
+  fileSelectionNonce,
+  onSelectFilePath,
   onWorkspaceFilesChange,
   onAskAiEdit,
   onOpenHtmlInPreview,
@@ -211,6 +219,7 @@ export function WorkbenchPane({
             tier={sandboxTier}
             files={workspaceFileMap}
             queuedCommand={queuedTerminalCommand}
+            onQueuedCommandConsumed={onQueuedCommandConsumed}
             onFilesChanged={onWorkspaceFilesChange}
             onTierChange={onChangeSandboxTier}
             onOpenTab={onSelectTab}
@@ -226,6 +235,9 @@ export function WorkbenchPane({
             onSelectArtifact={onSelectArtifact}
             onUpdateArtifact={onUpdateArtifact}
             workspaceFiles={workspaceFiles}
+            selectedFilePath={selectedFilePath}
+            fileSelectionNonce={fileSelectionNonce}
+            onSelectFilePath={onSelectFilePath}
             onWorkspaceFilesChange={onWorkspaceFilesChange}
             onAskAiEdit={onAskAiEdit}
             onOpenHtmlInPreview={onOpenHtmlInPreview}

@@ -137,23 +137,29 @@ export function SettingsDialog({
     2,
   );
 
-  const handleApplyProviderSettings = async () => {
-    const inferredMode: ProviderOverrideMode = draft.customBaseUrl.trim()
+  const normalizeProviderSettings = (raw: ClientProviderSettings): ClientProviderSettings => {
+    const customBaseUrl = raw.customBaseUrl.trim();
+    const byokApiKey = raw.byokApiKey.trim();
+    const inferredMode: ProviderOverrideMode = customBaseUrl
       ? 'custom-openai-compatible'
-      : draft.byokApiKey.trim().startsWith('vck_')
+      : byokApiKey.startsWith('vck_')
         ? 'byok-gateway'
-        : draft.byokApiKey.trim()
+        : byokApiKey
           ? 'byok-openai'
           : 'auto';
 
-    const cleaned: ClientProviderSettings = {
+    return {
       mode: inferredMode,
-      customBaseUrl: draft.customBaseUrl.trim(),
-      customApiKey: draft.customApiKey.trim(),
-      customModel: draft.customModel.trim(),
-      byokApiKey: draft.byokApiKey.trim(),
-      githubToken: draft.githubToken.trim(),
+      customBaseUrl,
+      customApiKey: raw.customApiKey.trim(),
+      customModel: raw.customModel.trim(),
+      byokApiKey,
+      githubToken: raw.githubToken.trim(),
     };
+  };
+
+  const handleApplyProviderSettings = async () => {
+    const cleaned = normalizeProviderSettings(draft);
     onSaveProviderSettings(cleaned);
     setRefreshing(true);
     try {
@@ -179,7 +185,18 @@ export function SettingsDialog({
   const handleVercelSignIn = async () => {
     setSigningIn(true);
     try {
-      await signInWithVercel(window.location.pathname || '/');
+      const res = await signInWithVercel(window.location.pathname || '/');
+      if (res && typeof res === 'object' && 'error' in res && res.error) {
+        const msg =
+          typeof res.error === 'object' && res.error !== null && 'message' in res.error
+            ? String((res.error as { message?: string }).message ?? '')
+            : '';
+        toast.error(
+          msg ||
+            'Sign in with Vercel is not configured on this host (set VERCEL_CLIENT_ID & VERCEL_CLIENT_SECRET).',
+        );
+        setSigningIn(false);
+      }
     } catch {
       toast.error(
         'Sign in with Vercel is not configured on this host (set VERCEL_CLIENT_ID & VERCEL_CLIENT_SECRET).',
@@ -272,7 +289,7 @@ export function SettingsDialog({
                     onClick={async () => {
                       setRefreshing(true);
                       try {
-                        await onRefreshDiagnostics(draft);
+                        await onRefreshDiagnostics(normalizeProviderSettings(draft));
                       } finally {
                         setRefreshing(false);
                       }

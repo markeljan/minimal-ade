@@ -33,7 +33,7 @@ async function isValidGuestCookie(
   const trimmed = rawValue.trim();
   const dotIdx = trimmed.indexOf('.');
   if (dotIdx === -1) {
-    return !secret && GUEST_ID_PATTERN.test(trimmed);
+    return process.env.NODE_ENV !== 'production' && !secret && GUEST_ID_PATTERN.test(trimmed);
   }
   const guestId = trimmed.slice(0, dotIdx);
   const sig = trimmed.slice(dotIdx + 1);
@@ -41,7 +41,7 @@ async function isValidGuestCookie(
     return false;
   }
   if (!secret) {
-    return true;
+    return process.env.NODE_ENV !== 'production';
   }
   const expected = await hmacSignHex(guestId, secret);
   return sig.length === expected.length && sig === expected;
@@ -60,6 +60,9 @@ function createGuestId(): string {
 
 export async function proxy(request: NextRequest): Promise<NextResponse> {
   const secret = process.env.BETTER_AUTH_SECRET?.trim() || process.env.AUTH_SECRET?.trim() || null;
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('BETTER_AUTH_SECRET (or AUTH_SECRET) must be configured in production.');
+  }
   const existingCookie = request.cookies.get(GUEST_COOKIE_NAME)?.value;
 
   if (await isValidGuestCookie(existingCookie, secret)) {

@@ -279,7 +279,7 @@ describe('adeCatalog, GenUI codegen, Sentinel safety, and /api/mcp', () => {
 
     const tsx = exportSpecToReactTsx(spec, 'TelemetryPanel');
     expect(tsx).toContain(
-      "import { ActionBar, MetricCard, MetricGrid } from '@/components/genui/components';",
+      "import { ActionBar, MetricCard, MetricGrid } from '@/components/genui/registry';",
     );
     expect(tsx).toContain('export interface GeneratedWidgetProps');
     expect(tsx).toContain("'open_workbench'");
@@ -374,6 +374,69 @@ describe('adeCatalog, GenUI codegen, Sentinel safety, and /api/mcp', () => {
       const dummyOpts = { toolCallId: 'tc-1', messages: [], context: undefined };
       expect(await bashApproval({ command: 'rm -rf /' }, dummyOpts)).toBe(true);
       expect(await bashApproval({ command: 'ls -la' }, dummyOpts)).toBe(false);
+    }
+
+    // Verify toModelOutput strips inline base64 data URLs on generate_image & browser_screenshot
+    const fakeBase64Png = `data:image/png;base64,${'A'.repeat(256)}`;
+    const screenshotToModel = tools.browser_screenshot?.toModelOutput;
+    expect(typeof screenshotToModel).toBe('function');
+    if (typeof screenshotToModel === 'function') {
+      const mapped = await screenshotToModel({
+        toolCallId: 'tc-shot',
+        input: { fullPage: false },
+        output: {
+          ok: true,
+          url: 'workspace://index.html',
+          title: 'Preview',
+          screenshotDataUrl: fakeBase64Png,
+          statusMessage: 'Rendered',
+          workbenchTab: 'browser',
+        },
+      });
+      const serialized = JSON.stringify(mapped);
+      expect(serialized).not.toContain('AAAA');
+      expect(serialized).toContain('base64 omitted');
+    }
+
+    const imageToModel = tools.generate_image?.toModelOutput;
+    expect(typeof imageToModel).toBe('function');
+    if (typeof imageToModel === 'function') {
+      const mappedDataUrl = await imageToModel({
+        toolCallId: 'tc-img-1',
+        input: { prompt: 'Astryx geometric prism' },
+        output: {
+          ok: true,
+          url: fakeBase64Png,
+          mediaType: 'image/png',
+          storage: 'data-url',
+          prompt: 'Astryx geometric prism',
+          aspectRatio: '1:1',
+          modelId: 'google/gemini-3.1-flash-image',
+          billingSource: 'vercel-oidc',
+        },
+      });
+      const dataSerialized = JSON.stringify(mappedDataUrl);
+      expect(dataSerialized).not.toContain('AAAA');
+      expect(dataSerialized).toContain('base64 omitted');
+
+      // Public HTTPS Blob URLs remain preserved for model context
+      const mappedBlobUrl = await imageToModel({
+        toolCallId: 'tc-img-2',
+        input: { prompt: 'Astryx geometric prism' },
+        output: {
+          ok: true,
+          url: 'https://public.blob.vercel-storage.com/ade/images/prism.png',
+          mediaType: 'image/png',
+          storage: 'vercel-blob',
+          prompt: 'Astryx geometric prism',
+          aspectRatio: '1:1',
+          modelId: 'google/gemini-3.1-flash-image',
+          billingSource: 'vercel-oidc',
+        },
+      });
+      expect(JSON.stringify(mappedBlobUrl)).toContain(
+        'https://public.blob.vercel-storage.com/ade/images/prism.png',
+      );
     }
   });
 

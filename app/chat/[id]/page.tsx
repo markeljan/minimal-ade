@@ -1,4 +1,4 @@
-import { notFound } from 'next/navigation';
+import { notFound, unstable_rethrow } from 'next/navigation';
 import { AdeShell } from '@/components/ade/ade-shell';
 import type { AdeUIMessage } from '@/components/ade/chat-pane';
 import { MODEL_CATALOG } from '@/lib/ai/models';
@@ -39,6 +39,7 @@ export default async function ChatPage({ params }: ChatPageProps) {
   let initialWorkspaceFileMap: Record<string, string> = {};
   let initialWorkspaceFiles: WorkspaceFileEntry[] = [];
   let diagnostics: ProviderDiagnostics | null = null;
+  let shouldNotFound = false;
 
   try {
     const session = await getServerSession();
@@ -56,15 +57,16 @@ export default async function ChatPage({ params }: ChatPageProps) {
       getProviderDiagnostics(session.vercelAuth ?? null).catch(() => null),
     ]);
 
-    chatRecord = loadedChat;
     chats = chatList;
     diagnostics = providerDiag;
 
-    if (chatRecord && chatRecord.visibility !== 'public' && chatRecord.userId !== session.userId) {
-      notFound();
-    }
-
-    if (chatRecord) {
+    if (
+      !loadedChat ||
+      (loadedChat.visibility !== 'public' && loadedChat.userId !== session.userId)
+    ) {
+      shouldNotFound = true;
+    } else {
+      chatRecord = loadedChat;
       const [storedMessages, storedVotes, artifacts, fileMap] = await Promise.all([
         getMessagesByChatId(id).catch(() => []),
         getVotesByChatId(id).catch(() => []),
@@ -91,17 +93,23 @@ export default async function ChatPage({ params }: ChatPageProps) {
         size: content.length,
       }));
     }
-  } catch {
-    // Degrade gracefully on cold start
+  } catch (err) {
+    unstable_rethrow(err);
+    // Degrade gracefully only on unexpected non-navigation errors
+    shouldNotFound = !chatRecord;
+  }
+
+  if (shouldNotFound || !chatRecord) {
+    notFound();
   }
 
   return (
     <AdeShell
       chatId={id}
-      isNewChat={!chatRecord}
-      initialTitle={chatRecord?.title ?? 'New Chat'}
-      initialModelId={chatRecord?.modelId ?? diagnostics?.defaultModelId}
-      initialHarnessMode={chatRecord?.harnessMode ?? 'ai-sdk'}
+      isNewChat={false}
+      initialTitle={chatRecord.title}
+      initialModelId={chatRecord.modelId ?? diagnostics?.defaultModelId}
+      initialHarnessMode={chatRecord.harnessMode ?? 'ai-sdk'}
       initialMessages={initialMessages}
       initialVotes={initialVotes}
       initialChats={chats}

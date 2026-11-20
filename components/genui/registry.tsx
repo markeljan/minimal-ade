@@ -1,6 +1,6 @@
 'use client';
 
-import { defineRegistry, useActions } from '@json-render/react';
+import { defineRegistry } from '@json-render/react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -46,7 +46,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Tabs as AstryxTabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { type AdeActionName, adeCatalog } from '@/lib/ai/catalog';
+import { type AdeActionName, type AdeComponentProps, adeCatalog } from '@/lib/ai/catalog';
 import { cn } from '@/lib/utils';
 
 export type GenUiActionHandler = (
@@ -71,23 +71,15 @@ export function GenUiActionBridgeProvider({
 }
 
 function useDispatchGenUiAction() {
-  const actionsCtx = useActions();
   const directCallback = React.useContext(GenUiActionCallbackContext);
 
   return React.useCallback(
     async (actionName: AdeActionName, params?: Record<string, unknown>) => {
-      if (actionsCtx?.handlers?.[actionName]) {
-        await actionsCtx.execute({
-          action: actionName,
-          params: params as Record<string, string | number | boolean | null>,
-        });
-        return;
-      }
       if (directCallback) {
         await directCallback(actionName, params);
       }
     },
-    [actionsCtx, directCallback],
+    [directCallback],
   );
 }
 
@@ -678,13 +670,13 @@ function AstryxForm({
   const dispatchAction = useDispatchGenUiAction();
   const headingId = React.useId();
   const [submitted, setSubmitted] = React.useState(false);
-  const [values, setValues] = React.useState<Record<string, unknown>>(() => {
-    const initial: Record<string, unknown> = {};
+  const [values, setValues] = React.useState<Record<string, string | boolean>>(() => {
+    const initial: Record<string, string | boolean> = {};
     for (const f of fields) {
-      if (f.defaultValue !== undefined) {
-        initial[f.name] = f.defaultValue;
-      } else if (f.type === 'toggle') {
-        initial[f.name] = false;
+      if (f.type === 'toggle') {
+        initial[f.name] = Boolean(f.defaultValue);
+      } else if (f.defaultValue !== undefined) {
+        initial[f.name] = String(f.defaultValue);
       } else if (f.type === 'select') {
         initial[f.name] = f.options?.[0]?.value ?? '';
       } else {
@@ -696,11 +688,26 @@ function AstryxForm({
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const normalizedValues: Record<string, unknown> = {};
+    for (const f of fields) {
+      const raw = values[f.name];
+      if (f.type === 'number') {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        if (trimmed === '') {
+          normalizedValues[f.name] = undefined;
+        } else {
+          const parsed = Number(trimmed);
+          normalizedValues[f.name] = Number.isFinite(parsed) ? parsed : trimmed;
+        }
+      } else {
+        normalizedValues[f.name] = raw;
+      }
+    }
     setSubmitted(true);
     await dispatchAction('submit_form', {
       formId: id,
       title,
-      values,
+      values: normalizedValues,
     });
   };
 
@@ -781,20 +788,18 @@ function AstryxForm({
                 <Input
                   id={fieldId}
                   name={field.name}
-                  type={field.type === 'number' ? 'text' : 'text'}
+                  type="text"
                   inputMode={field.type === 'number' ? 'decimal' : undefined}
                   required={field.required}
                   placeholder={field.placeholder}
-                  value={String(val ?? '')}
-                  onChange={(e) =>
+                  value={typeof val === 'string' ? val : ''}
+                  onChange={(e) => {
+                    setSubmitted(false);
                     setValues((prev) => ({
                       ...prev,
-                      [field.name]:
-                        field.type === 'number' && e.target.value !== ''
-                          ? Number(e.target.value)
-                          : e.target.value,
-                    }))
-                  }
+                      [field.name]: e.target.value,
+                    }));
+                  }}
                 />
               )}
             </div>
@@ -998,299 +1003,314 @@ function AstryxAskUserWidget({
    Main Catalog Registry via @json-render/react defineRegistry
    ========================================================================== */
 
-const defined = defineRegistry(adeCatalog, {
-  components: {
-    MetricCard: ({ props }) => {
-      const toneBorder =
-        props.tone === 'accent'
-          ? 'border-[var(--accent)]/35'
-          : props.tone === 'positive'
-            ? 'border-[var(--status-success)]/35'
-            : props.tone === 'warning'
-              ? 'border-[var(--status-warning)]/35'
-              : props.tone === 'danger'
-                ? 'border-[var(--status-danger)]/35'
-                : 'border-[var(--border-subtle)]';
+export function MetricCard(props: AdeComponentProps<'MetricCard'>) {
+  const toneBorder =
+    props.tone === 'accent'
+      ? 'border-[var(--accent)]/35'
+      : props.tone === 'positive'
+        ? 'border-[var(--status-success)]/35'
+        : props.tone === 'warning'
+          ? 'border-[var(--status-warning)]/35'
+          : props.tone === 'danger'
+            ? 'border-[var(--status-danger)]/35'
+            : 'border-[var(--border-subtle)]';
 
-      const deltaVariant =
-        props.trend === 'up' || props.tone === 'positive'
-          ? 'success'
-          : props.trend === 'down' || props.tone === 'danger'
-            ? 'danger'
-            : 'secondary';
+  const deltaVariant =
+    props.trend === 'up' || props.tone === 'positive'
+      ? 'success'
+      : props.trend === 'down' || props.tone === 'danger'
+        ? 'danger'
+        : 'secondary';
 
-      return (
-        <div
-          className={cn(
-            'flex min-w-0 flex-col justify-between gap-2 overflow-hidden rounded-[var(--radius-element)] border bg-[var(--bg-surface)] p-3.5 shadow-[var(--shadow-low)]',
-            toneBorder,
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 flex-col justify-between gap-2 overflow-hidden rounded-[var(--radius-element)] border bg-[var(--bg-surface)] p-3.5 shadow-[var(--shadow-low)]',
+        toneBorder,
+      )}
+    >
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5">
+        <span className="min-w-0 truncate text-[11px] font-semibold tracking-wide text-[var(--fg-muted)] uppercase">
+          {props.label}
+        </span>
+        {props.delta && (
+          <Badge variant={deltaVariant} className="shrink-0 font-mono text-[10px]">
+            {props.trend === 'up' && <ArrowUpRight className="size-3" aria-hidden="true" />}
+            {props.trend === 'down' && <ArrowDownRight className="size-3" aria-hidden="true" />}
+            {props.trend === 'neutral' && <Minus className="size-3" aria-hidden="true" />}
+            {props.delta}
+          </Badge>
+        )}
+      </div>
+      <div className="min-w-0 break-words text-2xl font-semibold tracking-tight text-[var(--fg-primary)] tabular-nums">
+        {props.value}
+      </div>
+      {props.caption && (
+        <p className="min-w-0 break-words text-[11px] text-[var(--fg-secondary)]">
+          {props.caption}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function MetricGrid({
+  title,
+  description,
+  columns = 3,
+  children,
+}: AdeComponentProps<'MetricGrid'> & { children?: React.ReactNode }) {
+  const gridClass =
+    columns === 1
+      ? 'grid-cols-1'
+      : columns === 2
+        ? 'grid-cols-1 @sm:grid-cols-2'
+        : columns === 4
+          ? 'grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 @3xl:grid-cols-4'
+          : 'grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3';
+
+  return (
+    <section className="@container flex min-w-0 flex-col gap-3 rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] p-4">
+      {(title || description) && (
+        <div className="min-w-0">
+          {title && <h4 className="text-sm font-semibold text-[var(--fg-primary)]">{title}</h4>}
+          {description && (
+            <p className="mt-0.5 text-xs text-[var(--fg-secondary)]">{description}</p>
           )}
-        >
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5">
-            <span className="min-w-0 truncate text-[11px] font-semibold tracking-wide text-[var(--fg-muted)] uppercase">
-              {props.label}
-            </span>
-            {props.delta && (
-              <Badge variant={deltaVariant} className="shrink-0 font-mono text-[10px]">
-                {props.trend === 'up' && <ArrowUpRight className="size-3" aria-hidden="true" />}
-                {props.trend === 'down' && <ArrowDownRight className="size-3" aria-hidden="true" />}
-                {props.trend === 'neutral' && <Minus className="size-3" aria-hidden="true" />}
-                {props.delta}
+        </div>
+      )}
+      <div className={cn('grid min-w-0 gap-2.5', gridClass)}>{children}</div>
+    </section>
+  );
+}
+
+export function Callout({
+  title,
+  message,
+  tone = 'info',
+  children,
+}: AdeComponentProps<'Callout'> & { children?: React.ReactNode }) {
+  const toneMap = {
+    info: {
+      container: 'border-[var(--status-info)]/30 bg-[var(--status-info-soft)]',
+      iconColor: 'text-[var(--status-info)]',
+      Icon: Info,
+    },
+    success: {
+      container: 'border-[var(--status-success)]/30 bg-[var(--status-success-soft)]',
+      iconColor: 'text-[var(--status-success)]',
+      Icon: CheckCircle2,
+    },
+    warning: {
+      container: 'border-[var(--status-warning)]/30 bg-[var(--status-warning-soft)]',
+      iconColor: 'text-[var(--status-warning)]',
+      Icon: AlertTriangle,
+    },
+    danger: {
+      container: 'border-[var(--status-danger)]/30 bg-[var(--status-danger-soft)]',
+      iconColor: 'text-[var(--status-danger)]',
+      Icon: AlertCircle,
+    },
+    neutral: {
+      container: 'border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)]',
+      iconColor: 'text-[var(--fg-secondary)]',
+      Icon: Info,
+    },
+  }[tone];
+
+  const Icon = toneMap.Icon;
+  return (
+    <div
+      className={cn('flex gap-3 rounded-[var(--radius-element)] border p-3.5', toneMap.container)}
+    >
+      <Icon className={cn('mt-0.5 size-4 shrink-0', toneMap.iconColor)} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        {title && <h4 className="text-xs font-semibold text-[var(--fg-primary)]">{title}</h4>}
+        <p className="mt-0.5 text-xs leading-relaxed text-[var(--fg-secondary)]">{message}</p>
+        {children && <div className="mt-2.5">{children}</div>}
+      </div>
+    </div>
+  );
+}
+
+export function Tabs({
+  defaultValue,
+  items,
+  children,
+}: AdeComponentProps<'Tabs'> & { children?: React.ReactNode }) {
+  const first = defaultValue ?? items[0]?.value ?? 'tab-0';
+  return (
+    <AstryxTabs
+      defaultValue={first}
+      className="rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3.5 shadow-[var(--shadow-low)]"
+    >
+      <TabsList>
+        {items.map((item) => (
+          <TabsTrigger key={item.value} value={item.value}>
+            <span>{item.label}</span>
+            {item.badge && (
+              <Badge variant="secondary" className="text-[10px]">
+                {item.badge}
               </Badge>
             )}
-          </div>
-          <div className="min-w-0 break-words text-2xl font-semibold tracking-tight text-[var(--fg-primary)] tabular-nums">
-            {props.value}
-          </div>
-          {props.caption && (
-            <p className="min-w-0 break-words text-[11px] text-[var(--fg-secondary)]">
-              {props.caption}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+
+      {items.map((item) => (
+        <TabsContent key={item.value} value={item.value} className="pt-1">
+          {item.content && (
+            <p className="text-xs leading-relaxed whitespace-pre-wrap text-[var(--fg-secondary)]">
+              {item.content}
             </p>
           )}
-        </div>
-      );
-    },
+        </TabsContent>
+      ))}
 
-    MetricGrid: ({ props, children }) => {
-      const cols = props.columns ?? 3;
-      const gridClass =
-        cols === 1
-          ? 'grid-cols-1'
-          : cols === 2
-            ? 'grid-cols-1 @sm:grid-cols-2'
-            : cols === 4
-              ? 'grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 @3xl:grid-cols-4'
-              : 'grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3';
+      {children && <div className="pt-1">{children}</div>}
+    </AstryxTabs>
+  );
+}
 
-      return (
-        <section className="@container flex min-w-0 flex-col gap-3 rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] p-4">
-          {(props.title || props.description) && (
-            <div className="min-w-0">
-              {props.title && (
-                <h4 className="text-sm font-semibold text-[var(--fg-primary)]">{props.title}</h4>
-              )}
-              {props.description && (
-                <p className="mt-0.5 text-xs text-[var(--fg-secondary)]">{props.description}</p>
-              )}
-            </div>
-          )}
-          <div className={cn('grid min-w-0 gap-2.5', gridClass)}>{children}</div>
-        </section>
-      );
-    },
-
-    DataTable: ({ props }) => <AstryxDataTable {...props} />,
-
-    Chart: ({ props }) => <AstryxChart {...props} />,
-
-    Callout: ({ props, children }) => {
-      const tone = props.tone ?? 'info';
-      const toneMap = {
-        info: {
-          container: 'border-[var(--status-info)]/30 bg-[var(--status-info-soft)]',
-          iconColor: 'text-[var(--status-info)]',
-          Icon: Info,
-        },
-        success: {
-          container: 'border-[var(--status-success)]/30 bg-[var(--status-success-soft)]',
-          iconColor: 'text-[var(--status-success)]',
-          Icon: CheckCircle2,
-        },
-        warning: {
-          container: 'border-[var(--status-warning)]/30 bg-[var(--status-warning-soft)]',
-          iconColor: 'text-[var(--status-warning)]',
-          Icon: AlertTriangle,
-        },
-        danger: {
-          container: 'border-[var(--status-danger)]/30 bg-[var(--status-danger-soft)]',
-          iconColor: 'text-[var(--status-danger)]',
-          Icon: AlertCircle,
-        },
-        neutral: {
-          container: 'border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)]',
-          iconColor: 'text-[var(--fg-secondary)]',
-          Icon: Info,
-        },
-      }[tone];
-
-      const Icon = toneMap.Icon;
-      return (
-        <div
-          className={cn(
-            'flex gap-3 rounded-[var(--radius-element)] border p-3.5',
-            toneMap.container,
-          )}
-        >
-          <Icon className={cn('mt-0.5 size-4 shrink-0', toneMap.iconColor)} aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            {props.title && (
-              <h4 className="text-xs font-semibold text-[var(--fg-primary)]">{props.title}</h4>
-            )}
-            <p className="mt-0.5 text-xs leading-relaxed text-[var(--fg-secondary)]">
-              {props.message}
-            </p>
-            {children && <div className="mt-2.5">{children}</div>}
-          </div>
-        </div>
-      );
-    },
-
-    Tabs: ({ props, children }) => {
-      const first = props.defaultValue ?? props.items[0]?.value ?? 'tab-0';
-      return (
-        <AstryxTabs
-          defaultValue={first}
-          className="rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3.5 shadow-[var(--shadow-low)]"
-        >
-          <TabsList>
-            {props.items.map((item) => (
-              <TabsTrigger key={item.value} value={item.value}>
-                <span>{item.label}</span>
-                {item.badge && (
-                  <Badge variant="secondary" className="text-[10px]">
-                    {item.badge}
-                  </Badge>
+export function Timeline({ title, items }: AdeComponentProps<'Timeline'>) {
+  return (
+    <div className="rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 shadow-[var(--shadow-low)]">
+      {title && <h4 className="mb-3 text-sm font-semibold text-[var(--fg-primary)]">{title}</h4>}
+      <ol className="relative flex flex-col gap-3 pl-5 before:absolute before:top-2 before:bottom-2 before:left-[7px] before:w-px before:bg-[var(--border-strong)]">
+        {items.map((item, idx) => {
+          const status = item.status ?? 'pending';
+          return (
+            <li key={item.id ?? idx} className="relative">
+              <span
+                className={cn(
+                  'absolute -left-5 top-0.5 flex size-4 items-center justify-center rounded-full bg-[var(--bg-surface)]',
+                  status === 'completed' && 'text-[var(--status-success)]',
+                  status === 'active' && 'text-[var(--accent)]',
+                  status === 'error' && 'text-[var(--status-danger)]',
+                  status === 'pending' && 'text-[var(--fg-muted)]',
                 )}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-
-          {props.items.map((item) => (
-            <TabsContent key={item.value} value={item.value} className="pt-1">
-              {item.content && (
-                <p className="text-xs leading-relaxed whitespace-pre-wrap text-[var(--fg-secondary)]">
-                  {item.content}
+              >
+                {status === 'completed' ? (
+                  <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                ) : status === 'active' ? (
+                  <Clock className="size-3.5 animate-pulse" aria-hidden="true" />
+                ) : status === 'error' ? (
+                  <XCircle className="size-3.5" aria-hidden="true" />
+                ) : (
+                  <Circle className="size-3" aria-hidden="true" />
+                )}
+              </span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-[var(--fg-primary)]">
+                    {item.title}
+                  </span>
+                  {item.badge && <Badge variant="secondary">{item.badge}</Badge>}
+                </div>
+                {item.timestamp && (
+                  <span className="font-mono text-[11px] text-[var(--fg-muted)]">
+                    {item.timestamp}
+                  </span>
+                )}
+              </div>
+              {item.description && (
+                <p className="mt-0.5 text-xs leading-relaxed text-[var(--fg-secondary)]">
+                  {item.description}
                 </p>
               )}
-            </TabsContent>
-          ))}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
 
-          {children && <div className="pt-1">{children}</div>}
-        </AstryxTabs>
-      );
-    },
-
-    Timeline: ({ props }) => (
-      <div className="rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 shadow-[var(--shadow-low)]">
-        {props.title && (
-          <h4 className="mb-3 text-sm font-semibold text-[var(--fg-primary)]">{props.title}</h4>
-        )}
-        <ol className="relative flex flex-col gap-3 pl-5 before:absolute before:top-2 before:bottom-2 before:left-[7px] before:w-px before:bg-[var(--border-strong)]">
-          {props.items.map((item, idx) => {
-            const status = item.status ?? 'pending';
-            return (
-              <li key={item.id ?? idx} className="relative">
-                <span
-                  className={cn(
-                    'absolute -left-5 top-0.5 flex size-4 items-center justify-center rounded-full bg-[var(--bg-surface)]',
-                    status === 'completed' && 'text-[var(--status-success)]',
-                    status === 'active' && 'text-[var(--accent)]',
-                    status === 'error' && 'text-[var(--status-danger)]',
-                    status === 'pending' && 'text-[var(--fg-muted)]',
-                  )}
-                >
-                  {status === 'completed' ? (
-                    <CheckCircle2 className="size-3.5" aria-hidden="true" />
-                  ) : status === 'active' ? (
-                    <Clock className="size-3.5 animate-pulse" aria-hidden="true" />
-                  ) : status === 'error' ? (
-                    <XCircle className="size-3.5" aria-hidden="true" />
-                  ) : (
-                    <Circle className="size-3" aria-hidden="true" />
-                  )}
-                </span>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-[var(--fg-primary)]">
-                      {item.title}
-                    </span>
-                    {item.badge && <Badge variant="secondary">{item.badge}</Badge>}
-                  </div>
-                  {item.timestamp && (
-                    <span className="font-mono text-[11px] text-[var(--fg-muted)]">
-                      {item.timestamp}
-                    </span>
-                  )}
-                </div>
-                {item.description && (
-                  <p className="mt-0.5 text-xs leading-relaxed text-[var(--fg-secondary)]">
-                    {item.description}
-                  </p>
+export function DiffCard(props: AdeComponentProps<'DiffCard'>) {
+  return (
+    <div className="overflow-hidden rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] shadow-[var(--shadow-low)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] px-3.5 py-2">
+        <div className="flex items-center gap-2">
+          <FileDiff className="size-3.5 text-[var(--accent)]" aria-hidden="true" />
+          <span className="font-mono text-xs font-semibold text-[var(--fg-primary)]">
+            {props.filename}
+          </span>
+          {props.language && <Badge variant="secondary">{props.language}</Badge>}
+        </div>
+        <div className="flex items-center gap-2 font-mono text-[11px]">
+          {props.additions !== undefined && (
+            <span className="text-[var(--status-success)]">+{props.additions}</span>
+          )}
+          {props.deletions !== undefined && (
+            <span className="text-[var(--status-danger)]">-{props.deletions}</span>
+          )}
+        </div>
+      </div>
+      {props.summary && (
+        <p className="border-b border-[var(--border-subtle)] px-3.5 py-2 text-xs text-[var(--fg-secondary)]">
+          {props.summary}
+        </p>
+      )}
+      <div className="max-h-80 overflow-auto font-mono text-[11px] leading-relaxed">
+        {props.hunks.map((hunk, hIdx) => (
+          <div key={hIdx}>
+            {hunk.header && (
+              <div className="bg-[var(--accent-soft)] px-3 py-1 text-[10px] font-medium text-[var(--accent)]">
+                {hunk.header}
+              </div>
+            )}
+            {hunk.lines.map((line, lIdx) => (
+              <div
+                key={lIdx}
+                className={cn(
+                  'flex gap-2 px-3 py-0.5 whitespace-pre',
+                  line.type === 'add' &&
+                    'bg-[var(--status-success-soft)] text-[var(--status-success)]',
+                  line.type === 'remove' &&
+                    'bg-[var(--status-danger-soft)] text-[var(--status-danger)]',
+                  line.type === 'context' && 'text-[var(--fg-secondary)]',
                 )}
-              </li>
-            );
-          })}
-        </ol>
-      </div>
-    ),
-
-    DiffCard: ({ props }) => (
-      <div className="overflow-hidden rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] shadow-[var(--shadow-low)]">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] px-3.5 py-2">
-          <div className="flex items-center gap-2">
-            <FileDiff className="size-3.5 text-[var(--accent)]" aria-hidden="true" />
-            <span className="font-mono text-xs font-semibold text-[var(--fg-primary)]">
-              {props.filename}
-            </span>
-            {props.language && <Badge variant="secondary">{props.language}</Badge>}
+              >
+                <span className="w-7 shrink-0 select-none text-right opacity-55">
+                  {line.lineNumber ?? ''}
+                </span>
+                <span className="w-3 shrink-0 select-none">
+                  {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
+                </span>
+                <span className="min-w-0 flex-1">{line.content}</span>
+              </div>
+            ))}
           </div>
-          <div className="flex items-center gap-2 font-mono text-[11px]">
-            {props.additions !== undefined && (
-              <span className="text-[var(--status-success)]">+{props.additions}</span>
-            )}
-            {props.deletions !== undefined && (
-              <span className="text-[var(--status-danger)]">-{props.deletions}</span>
-            )}
-          </div>
-        </div>
-        {props.summary && (
-          <p className="border-b border-[var(--border-subtle)] px-3.5 py-2 text-xs text-[var(--fg-secondary)]">
-            {props.summary}
-          </p>
-        )}
-        <div className="max-h-80 overflow-auto font-mono text-[11px] leading-relaxed">
-          {props.hunks.map((hunk, hIdx) => (
-            <div key={hIdx}>
-              {hunk.header && (
-                <div className="bg-[var(--accent-soft)] px-3 py-1 text-[10px] font-medium text-[var(--accent)]">
-                  {hunk.header}
-                </div>
-              )}
-              {hunk.lines.map((line, lIdx) => (
-                <div
-                  key={lIdx}
-                  className={cn(
-                    'flex gap-2 px-3 py-0.5 whitespace-pre',
-                    line.type === 'add' &&
-                      'bg-[var(--status-success-soft)] text-[var(--status-success)]',
-                    line.type === 'remove' &&
-                      'bg-[var(--status-danger-soft)] text-[var(--status-danger)]',
-                    line.type === 'context' && 'text-[var(--fg-secondary)]',
-                  )}
-                >
-                  <span className="w-7 shrink-0 select-none text-right opacity-55">
-                    {line.lineNumber ?? ''}
-                  </span>
-                  <span className="w-3 shrink-0 select-none">
-                    {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
-                  </span>
-                  <span className="min-w-0 flex-1">{line.content}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
+        ))}
       </div>
-    ),
+    </div>
+  );
+}
 
+export {
+  AstryxActionBar as ActionBar,
+  AstryxApprovalCard as ApprovalCard,
+  AstryxAskUserWidget as AskUserCard,
+  AstryxChart as Chart,
+  AstryxCodePreview as CodePreview,
+  AstryxDataTable as DataTable,
+  AstryxForm as Form,
+};
+
+const defined = defineRegistry(adeCatalog, {
+  components: {
+    MetricCard: ({ props }) => <MetricCard {...props} />,
+    MetricGrid: ({ props, children }) => <MetricGrid {...props}>{children}</MetricGrid>,
+    DataTable: ({ props }) => <AstryxDataTable {...props} />,
+    Chart: ({ props }) => <AstryxChart {...props} />,
+    Callout: ({ props, children }) => <Callout {...props}>{children}</Callout>,
+    Tabs: ({ props, children }) => <Tabs {...props}>{children}</Tabs>,
+    Timeline: ({ props }) => <Timeline {...props} />,
+    DiffCard: ({ props }) => <DiffCard {...props} />,
     CodePreview: ({ props }) => <AstryxCodePreview {...props} />,
-
     ActionBar: ({ props }) => <AstryxActionBar {...props} />,
-
     Form: ({ props }) => <AstryxForm {...props} />,
-
     ApprovalCard: ({ props }) => <AstryxApprovalCard {...props} />,
-
     AskUserCard: ({ props }) => <AstryxAskUserWidget {...props} />,
   },
 
