@@ -1,0 +1,792 @@
+@import "tailwindcss";
+
+/* Register Streamdown and plugin bundles for Tailwind v4 utility scanning */
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+@source "../node_modules/@streamdown/math/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
+
+@custom-variant dark (
+  &:where(.dark, .dark *, [data-color-scheme="dark"], [data-color-scheme="dark"] *)
+);
+
+/* Registered length properties for scroll-driven horizontal fade masks (modern-web-guidance) */
+@property --fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* ==========================================================================
+   Astryx Design Language Tokens
+   Zero-rerender light-dark() semantic tokens driven by color-scheme on <html>
+   + data-astryx-theme ("neutral" | "stone" | "matcha" | "obsidian").
+   Note: Design tokens are intentionally NOT registered with @property <color>
+   so light-dark() re-resolves dynamically inside component-specific color-scheme subtrees.
+   ========================================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* Typography */
+  --font-astryx-sans:
+    var(--font-figtree), "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-astryx-mono:
+    var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Concentric Radii (innerRadius = outerRadius - padding) */
+  --radius-inner: 0.5rem; /* 8px */
+  --radius-element: 0.75rem; /* 12px */
+  --radius-container: 1rem; /* 16px */
+  --radius-chat: 1.75rem; /* 28px */
+  --radius-page: 2rem; /* 32px */
+  --radius-full: 9999px;
+
+  /* 3-Tier Motion Bands */
+  --duration-fast: 125ms;
+  --duration-medium: 300ms;
+  --duration-slow: 700ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-entrance: cubic-bezier(0, 0, 0.2, 1);
+  --ease-move: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Palette Raw Pairs — Default: Neutral */
+  --astryx-canvas-light: #f1f4f7;
+  --astryx-canvas-dark: #111112;
+  --astryx-surface-light: #ffffff;
+  --astryx-surface-dark: #1f1f22;
+  --astryx-surface-subtle-light: #f7f9fb;
+  --astryx-surface-subtle-dark: #18181b;
+  --astryx-surface-elevated-light: #ffffff;
+  --astryx-surface-elevated-dark: #25262a;
+  --astryx-popover-light: #ffffff;
+  --astryx-popover-dark: #28292c;
+
+  --astryx-ink-light: #0b1220;
+  --astryx-ink-dark: #f2f4f6;
+  --astryx-ink-secondary-light: #475569;
+  --astryx-ink-secondary-dark: #a9b1bc;
+  --astryx-ink-muted-light: #64748b;
+  --astryx-ink-muted-dark: #858d99;
+
+  --astryx-border-light: #05365919;
+  --astryx-border-dark: #f2f4f619;
+  --astryx-border-strong-light: #0536592e;
+  --astryx-border-strong-dark: #f2f4f62e;
+
+  --astryx-hover-light: #0536590c;
+  --astryx-hover-dark: #ffffff0c;
+  --astryx-press-light: #05365919;
+  --astryx-press-dark: #ffffff19;
+
+  --astryx-accent-light: #0064e0;
+  --astryx-accent-dark: #3d87ff;
+  --astryx-accent-hover-light: #225bff;
+  --astryx-accent-hover-dark: #5a9bff;
+  --astryx-accent-soft-light: #0064e014;
+  --astryx-accent-soft-dark: #3d87ff22;
+  --astryx-accent-ink-light: #ffffff;
+  --astryx-accent-ink-dark: #07111f;
+
+  /* Semantic Status Raw Pairs (WCAG AA compliant) */
+  --astryx-success-light: #0d7a4a;
+  --astryx-success-dark: #34d399;
+  --astryx-success-soft-light: #0d7a4a14;
+  --astryx-success-soft-dark: #34d3991e;
+
+  --astryx-warning-light: #b45309;
+  --astryx-warning-dark: #fbbf24;
+  --astryx-warning-soft-light: #b4530916;
+  --astryx-warning-soft-dark: #fbbf241e;
+
+  --astryx-danger-light: #c81e3a;
+  --astryx-danger-dark: #fb7185;
+  --astryx-danger-soft-light: #c81e3a14;
+  --astryx-danger-soft-dark: #fb718522;
+
+  --astryx-info-light: #0064e0;
+  --astryx-info-dark: #60a5fa;
+  --astryx-info-soft-light: #0064e014;
+  --astryx-info-soft-dark: #60a5fa20;
+
+  /* Scrollbar Raw Pairs (>= 3:1 thumb contrast) */
+  --astryx-scrollbar-track-light: transparent;
+  --astryx-scrollbar-track-dark: transparent;
+  --astryx-scrollbar-thumb-light: #64748b80;
+  --astryx-scrollbar-thumb-dark: #94a3b875;
+
+  /* Fallback assignments for browsers without light-dark() */
+  --bg-canvas: var(--astryx-canvas-light);
+  --bg-surface: var(--astryx-surface-light);
+  --bg-surface-subtle: var(--astryx-surface-subtle-light);
+  --bg-surface-elevated: var(--astryx-surface-elevated-light);
+  --bg-popover: var(--astryx-popover-light);
+  --fg-primary: var(--astryx-ink-light);
+  --fg-secondary: var(--astryx-ink-secondary-light);
+  --fg-muted: var(--astryx-ink-muted-light);
+  --border-subtle: var(--astryx-border-light);
+  --border-strong: var(--astryx-border-strong-light);
+  --overlay-hover: var(--astryx-hover-light);
+  --overlay-press: var(--astryx-press-light);
+  --accent: var(--astryx-accent-light);
+  --accent-hover: var(--astryx-accent-hover-light);
+  --accent-soft: var(--astryx-accent-soft-light);
+  --accent-foreground: var(--astryx-accent-ink-light);
+  --status-success: var(--astryx-success-light);
+  --status-success-soft: var(--astryx-success-soft-light);
+  --status-warning: var(--astryx-warning-light);
+  --status-warning-soft: var(--astryx-warning-soft-light);
+  --status-danger: var(--astryx-danger-light);
+  --status-danger-soft: var(--astryx-danger-soft-light);
+  --status-info: var(--astryx-info-light);
+  --status-info-soft: var(--astryx-info-soft-light);
+  --scrollbar-track: var(--astryx-scrollbar-track-light);
+  --scrollbar-thumb: var(--astryx-scrollbar-thumb-light);
+
+  /* Multi-layer soft elevation shadows & crisp inset state rings */
+  --shadow-low: 0 1px 2px rgb(5 54 89 / 0.05), 0 1px 1px rgb(5 54 89 / 0.03);
+  --shadow-med: 0 4px 14px -2px rgb(5 54 89 / 0.08), 0 2px 4px -1px rgb(5 54 89 / 0.04);
+  --shadow-high: 0 16px 36px -8px rgb(5 54 89 / 0.14), 0 6px 14px -4px rgb(5 54 89 / 0.07);
+  --shadow-inset-hover: inset 0 0 0 1px var(--border-strong);
+  --shadow-inset-selected: inset 0 0 0 1.5px var(--accent);
+
+  @media (prefers-color-scheme: dark) {
+    --bg-canvas: var(--astryx-canvas-dark);
+    --bg-surface: var(--astryx-surface-dark);
+    --bg-surface-subtle: var(--astryx-surface-subtle-dark);
+    --bg-surface-elevated: var(--astryx-surface-elevated-dark);
+    --bg-popover: var(--astryx-popover-dark);
+    --fg-primary: var(--astryx-ink-dark);
+    --fg-secondary: var(--astryx-ink-secondary-dark);
+    --fg-muted: var(--astryx-ink-muted-dark);
+    --border-subtle: var(--astryx-border-dark);
+    --border-strong: var(--astryx-border-strong-dark);
+    --overlay-hover: var(--astryx-hover-dark);
+    --overlay-press: var(--astryx-press-dark);
+    --accent: var(--astryx-accent-dark);
+    --accent-hover: var(--astryx-accent-hover-dark);
+    --accent-soft: var(--astryx-accent-soft-dark);
+    --accent-foreground: var(--astryx-accent-ink-dark);
+    --status-success: var(--astryx-success-dark);
+    --status-success-soft: var(--astryx-success-soft-dark);
+    --status-warning: var(--astryx-warning-dark);
+    --status-warning-soft: var(--astryx-warning-soft-dark);
+    --status-danger: var(--astryx-danger-dark);
+    --status-danger-soft: var(--astryx-danger-soft-dark);
+    --status-info: var(--astryx-info-dark);
+    --status-info-soft: var(--astryx-info-soft-dark);
+    --scrollbar-track: var(--astryx-scrollbar-track-dark);
+    --scrollbar-thumb: var(--astryx-scrollbar-thumb-dark);
+  }
+
+  /* Native light-dark() progressive enhancement (Baseline since May 2024) */
+  @supports (color: light-dark(white, black)) {
+    --bg-canvas: light-dark(var(--astryx-canvas-light), var(--astryx-canvas-dark));
+    --bg-surface: light-dark(var(--astryx-surface-light), var(--astryx-surface-dark));
+    --bg-surface-subtle: light-dark(
+      var(--astryx-surface-subtle-light),
+      var(--astryx-surface-subtle-dark)
+    );
+    --bg-surface-elevated: light-dark(
+      var(--astryx-surface-elevated-light),
+      var(--astryx-surface-elevated-dark)
+    );
+    --bg-popover: light-dark(var(--astryx-popover-light), var(--astryx-popover-dark));
+
+    --fg-primary: light-dark(var(--astryx-ink-light), var(--astryx-ink-dark));
+    --fg-secondary: light-dark(var(--astryx-ink-secondary-light), var(--astryx-ink-secondary-dark));
+    --fg-muted: light-dark(var(--astryx-ink-muted-light), var(--astryx-ink-muted-dark));
+
+    --border-subtle: light-dark(var(--astryx-border-light), var(--astryx-border-dark));
+    --border-strong: light-dark(
+      var(--astryx-border-strong-light),
+      var(--astryx-border-strong-dark)
+    );
+
+    --overlay-hover: light-dark(var(--astryx-hover-light), var(--astryx-hover-dark));
+    --overlay-press: light-dark(var(--astryx-press-light), var(--astryx-press-dark));
+
+    --accent: light-dark(var(--astryx-accent-light), var(--astryx-accent-dark));
+    --accent-hover: light-dark(var(--astryx-accent-hover-light), var(--astryx-accent-hover-dark));
+    --accent-soft: light-dark(var(--astryx-accent-soft-light), var(--astryx-accent-soft-dark));
+    --accent-foreground: light-dark(var(--astryx-accent-ink-light), var(--astryx-accent-ink-dark));
+
+    --status-success: light-dark(var(--astryx-success-light), var(--astryx-success-dark));
+    --status-success-soft: light-dark(
+      var(--astryx-success-soft-light),
+      var(--astryx-success-soft-dark)
+    );
+    --status-warning: light-dark(var(--astryx-warning-light), var(--astryx-warning-dark));
+    --status-warning-soft: light-dark(
+      var(--astryx-warning-soft-light),
+      var(--astryx-warning-soft-dark)
+    );
+    --status-danger: light-dark(var(--astryx-danger-light), var(--astryx-danger-dark));
+    --status-danger-soft: light-dark(
+      var(--astryx-danger-soft-light),
+      var(--astryx-danger-soft-dark)
+    );
+    --status-info: light-dark(var(--astryx-info-light), var(--astryx-info-dark));
+    --status-info-soft: light-dark(var(--astryx-info-soft-light), var(--astryx-info-soft-dark));
+
+    --scrollbar-track: light-dark(
+      var(--astryx-scrollbar-track-light),
+      var(--astryx-scrollbar-track-dark)
+    );
+    --scrollbar-thumb: light-dark(
+      var(--astryx-scrollbar-thumb-light),
+      var(--astryx-scrollbar-thumb-dark)
+    );
+  }
+
+  /* shadcn/ui semantic alias tokens so Streamdown & UI components stay unified */
+  --background: var(--bg-canvas);
+  --foreground: var(--fg-primary);
+  --card: var(--bg-surface);
+  --card-foreground: var(--fg-primary);
+  --popover: var(--bg-popover);
+  --popover-foreground: var(--fg-primary);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-foreground);
+  --secondary: var(--bg-surface-subtle);
+  --secondary-foreground: var(--fg-primary);
+  --muted: var(--bg-surface-subtle);
+  --muted-foreground: var(--fg-muted);
+  --accent-bg: var(--overlay-hover);
+  --destructive: var(--status-danger);
+  --destructive-foreground: #ffffff;
+  --border: var(--border-subtle);
+  --input: var(--border-strong);
+  --ring: var(--accent);
+
+  accent-color: var(--accent);
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Explicit color-scheme overrides for @ui-sdk/react/preferences */
+html[data-color-scheme="light"] {
+  color-scheme: light;
+}
+
+html[data-color-scheme="dark"] {
+  color-scheme: dark;
+  --shadow-low: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 1px rgb(0 0 0 / 0.25);
+  --shadow-med: 0 6px 18px -2px rgb(0 0 0 / 0.45), 0 2px 6px -1px rgb(0 0 0 / 0.3);
+  --shadow-high: 0 20px 44px -8px rgb(0 0 0 / 0.62), 0 8px 18px -4px rgb(0 0 0 / 0.42);
+}
+
+html[data-color-scheme="system"] {
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-color-scheme="system"] {
+    --shadow-low: 0 1px 2px rgb(0 0 0 / 0.35), 0 1px 1px rgb(0 0 0 / 0.25);
+    --shadow-med: 0 6px 18px -2px rgb(0 0 0 / 0.45), 0 2px 6px -1px rgb(0 0 0 / 0.3);
+    --shadow-high: 0 20px 44px -8px rgb(0 0 0 / 0.62), 0 8px 18px -4px rgb(0 0 0 / 0.42);
+  }
+}
+
+/* ==========================================================================
+   Astryx Palette Variants (data-astryx-theme)
+   ========================================================================== */
+
+html[data-astryx-theme="stone"] {
+  --astryx-canvas-light: #f4f2ee;
+  --astryx-canvas-dark: #141210;
+  --astryx-surface-light: #fcfbf9;
+  --astryx-surface-dark: #211e1b;
+  --astryx-surface-subtle-light: #eae6df;
+  --astryx-surface-subtle-dark: #1a1816;
+  --astryx-surface-elevated-light: #ffffff;
+  --astryx-surface-elevated-dark: #282420;
+  --astryx-popover-light: #ffffff;
+  --astryx-popover-dark: #2b2723;
+
+  --astryx-ink-light: #1c1917;
+  --astryx-ink-dark: #f5f3ef;
+  --astryx-ink-secondary-light: #57534e;
+  --astryx-ink-secondary-dark: #b5aea5;
+  --astryx-ink-muted-light: #78716c;
+  --astryx-ink-muted-dark: #8c847a;
+
+  --astryx-border-light: #29252419;
+  --astryx-border-dark: #f5f3ef19;
+  --astryx-border-strong-light: #2925242e;
+  --astryx-border-strong-dark: #f5f3ef2e;
+
+  --astryx-hover-light: #2925240c;
+  --astryx-hover-dark: #ffffff0c;
+  --astryx-press-light: #29252418;
+  --astryx-press-dark: #ffffff18;
+
+  --astryx-accent-light: #b45309;
+  --astryx-accent-dark: #f59e0b;
+  --astryx-accent-hover-light: #92400e;
+  --astryx-accent-hover-dark: #fbbf24;
+  --astryx-accent-soft-light: #b4530916;
+  --astryx-accent-soft-dark: #f59e0b22;
+  --astryx-accent-ink-light: #ffffff;
+  --astryx-accent-ink-dark: #1a1205;
+}
+
+html[data-astryx-theme="matcha"] {
+  --astryx-canvas-light: #eff4f0;
+  --astryx-canvas-dark: #0e1411;
+  --astryx-surface-light: #fafdfb;
+  --astryx-surface-dark: #18221d;
+  --astryx-surface-subtle-light: #e4ece6;
+  --astryx-surface-subtle-dark: #131b17;
+  --astryx-surface-elevated-light: #ffffff;
+  --astryx-surface-elevated-dark: #1e2a24;
+  --astryx-popover-light: #ffffff;
+  --astryx-popover-dark: #212e27;
+
+  --astryx-ink-light: #0f1f16;
+  --astryx-ink-dark: #ecf4ef;
+  --astryx-ink-secondary-light: #3e5648;
+  --astryx-ink-secondary-dark: #a3b8ac;
+  --astryx-ink-muted-light: #5a7264;
+  --astryx-ink-muted-dark: #7d9688;
+
+  --astryx-border-light: #0f3a2219;
+  --astryx-border-dark: #ecf4ef19;
+  --astryx-border-strong-light: #0f3a222e;
+  --astryx-border-strong-dark: #ecf4ef2e;
+
+  --astryx-hover-light: #0f3a220c;
+  --astryx-hover-dark: #ffffff0c;
+  --astryx-press-light: #0f3a2218;
+  --astryx-press-dark: #ffffff18;
+
+  --astryx-accent-light: #157a4b;
+  --astryx-accent-dark: #34d399;
+  --astryx-accent-hover-light: #11653e;
+  --astryx-accent-hover-dark: #52e0ac;
+  --astryx-accent-soft-light: #157a4b16;
+  --astryx-accent-soft-dark: #34d39922;
+  --astryx-accent-ink-light: #ffffff;
+  --astryx-accent-ink-dark: #041c11;
+}
+
+html[data-astryx-theme="obsidian"] {
+  --astryx-canvas-light: #eef0f4;
+  --astryx-canvas-dark: #09090b;
+  --astryx-surface-light: #fafafc;
+  --astryx-surface-dark: #141418;
+  --astryx-surface-subtle-light: #e5e8ef;
+  --astryx-surface-subtle-dark: #0f0f13;
+  --astryx-surface-elevated-light: #ffffff;
+  --astryx-surface-elevated-dark: #1a1a20;
+  --astryx-popover-light: #ffffff;
+  --astryx-popover-dark: #1e1e25;
+
+  --astryx-ink-light: #0d0f14;
+  --astryx-ink-dark: #f4f5f8;
+  --astryx-ink-secondary-light: #464c5c;
+  --astryx-ink-secondary-dark: #a1a6b5;
+  --astryx-ink-muted-light: #656c7d;
+  --astryx-ink-muted-dark: #7e8494;
+
+  --astryx-border-light: #0d0f141a;
+  --astryx-border-dark: #f4f5f81a;
+  --astryx-border-strong-light: #0d0f1430;
+  --astryx-border-strong-dark: #f4f5f82e;
+
+  --astryx-hover-light: #0d0f140c;
+  --astryx-hover-dark: #ffffff0d;
+  --astryx-press-light: #0d0f1418;
+  --astryx-press-dark: #ffffff1a;
+
+  --astryx-accent-light: #4f46e5;
+  --astryx-accent-dark: #818cf8;
+  --astryx-accent-hover-light: #4338ca;
+  --astryx-accent-hover-dark: #a5b4fc;
+  --astryx-accent-soft-light: #4f46e516;
+  --astryx-accent-soft-dark: #818cf824;
+  --astryx-accent-ink-light: #ffffff;
+  --astryx-accent-ink-dark: #0a0b1e;
+}
+
+/* ==========================================================================
+   Tailwind v4 @theme inline mapping
+   ========================================================================== */
+
+@theme inline {
+  --font-sans: var(--font-astryx-sans);
+  --font-mono: var(--font-astryx-mono);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-surface-subtle: var(--bg-surface-subtle);
+  --color-surface-elevated: var(--bg-surface-elevated);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ink-secondary: var(--fg-secondary);
+  --color-ink-muted: var(--fg-muted);
+  --color-overlay-hover: var(--overlay-hover);
+  --color-overlay-press: var(--overlay-press);
+
+  --color-success: var(--status-success);
+  --color-success-soft: var(--status-success-soft);
+  --color-warning: var(--status-warning);
+  --color-warning-soft: var(--status-warning-soft);
+  --color-danger: var(--status-danger);
+  --color-danger-soft: var(--status-danger-soft);
+  --color-info: var(--status-info);
+  --color-info-soft: var(--status-info-soft);
+
+  --radius-inner: var(--radius-inner);
+  --radius-element: var(--radius-element);
+  --radius-container: var(--radius-container);
+  --radius-chat: var(--radius-chat);
+  --radius-page: var(--radius-page);
+
+  --shadow-low: var(--shadow-low);
+  --shadow-med: var(--shadow-med);
+  --shadow-high: var(--shadow-high);
+  --shadow-inset-hover: var(--shadow-inset-hover);
+  --shadow-inset-selected: var(--shadow-inset-selected);
+}
+
+/* ==========================================================================
+   Base & Accessibility Defaults
+   ========================================================================== */
+
+@layer base {
+  * {
+    border-color: var(--border-subtle);
+  }
+
+  html {
+    background-color: var(--bg-canvas);
+    color: var(--fg-primary);
+    font-family: var(--font-astryx-sans);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--fg-primary);
+    min-block-size: 100dvh;
+    overflow-x: clip;
+  }
+
+  ::selection {
+    background-color: var(--accent-soft);
+    color: var(--fg-primary);
+  }
+
+  /* High-contrast keyboard focus rings using outline + outline-offset (a11y guide) */
+  :where(a:any-link, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Non-intrusive form error styling via :user-invalid (forms guide) */
+  :where(input, textarea, select):user-invalid {
+    border-color: var(--status-danger);
+  }
+
+  /* Coarse pointer minimum hit target bump */
+  @media (pointer: coarse) {
+    :where(button, [role="button"], input, select) {
+      min-block-size: 2.5rem;
+    }
+  }
+}
+
+/* ==========================================================================
+   Component-Specific Dark Surface (component-specific-light-dark-theme guide)
+   Always re-specifies inherited color properties so light-dark() re-resolves!
+   ========================================================================== */
+
+.astryx-dark-surface {
+  color-scheme: only dark;
+  background-color: var(--bg-canvas);
+  color: var(--fg-primary);
+  accent-color: var(--accent);
+  caret-color: var(--accent);
+}
+
+/* ==========================================================================
+   Visually Hidden Utility (accessibility guide canonical recipe)
+   ========================================================================== */
+
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute;
+  clip-path: inset(50%);
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  white-space: nowrap;
+}
+
+.skip-link:focus-visible {
+  position: fixed;
+  inset-block-start: 0.75rem;
+  inset-inline-start: 0.75rem;
+  z-index: 100;
+  padding: 0.5rem 0.875rem;
+  border-radius: var(--radius-element);
+  background: var(--accent);
+  color: var(--accent-foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+  box-shadow: var(--shadow-med);
+}
+
+/* ==========================================================================
+   Declarative Popover & Dialog Support (declarative-dialog-popover-control)
+   ========================================================================== */
+
+[popover]:is(:popover-open, .\:popover-open) {
+  background-color: var(--bg-popover);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  box-shadow: var(--shadow-high);
+}
+
+dialog::backdrop {
+  background-color: rgb(9 12 18 / 0.45);
+  backdrop-filter: blur(4px);
+}
+
+/* ==========================================================================
+   Scrollability Affordance Hints (scrollability-affordance-hints guide)
+   1. Vertical shadow affordance via scroll-state container query + fallback
+   2. Horizontal fade affordance via scroll-driven mask animation
+   ========================================================================== */
+
+.astryx-scroll-shadow {
+  overflow-y: auto;
+  container-type: scroll-state;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.astryx-scroll-shadow::before,
+.astryx-scroll-shadow::after {
+  content: "";
+  display: block;
+  position: sticky;
+  block-size: 0.75rem;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+
+.astryx-scroll-shadow::before {
+  inset-block-start: 0;
+  margin-block-end: -0.75rem;
+  background: radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.14), transparent);
+}
+
+.astryx-scroll-shadow::after {
+  inset-block-end: 0;
+  margin-block-start: -0.75rem;
+  background: radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.14), transparent);
+}
+
+@container scroll-state(scrollable: block-start) {
+  .astryx-scroll-shadow::before {
+    opacity: 1;
+  }
+}
+
+@container scroll-state(scrollable: block-end) {
+  .astryx-scroll-shadow::after {
+    opacity: 1;
+  }
+}
+
+@supports not (container-type: scroll-state) {
+  .astryx-scroll-shadow::before,
+  .astryx-scroll-shadow::after {
+    animation: astryx-show-scroll-shadow linear both;
+    animation-timeline: scroll();
+  }
+
+  .astryx-scroll-shadow::before {
+    animation-range: 0 2rem;
+  }
+
+  .astryx-scroll-shadow::after {
+    animation-direction: reverse;
+    animation-range: calc(100% - 2rem) 100%;
+  }
+}
+
+@keyframes astryx-show-scroll-shadow {
+  to {
+    opacity: 1;
+  }
+}
+
+.astryx-scroll-fade-x {
+  overflow-x: auto;
+  --fade-size: 2rem;
+  --fade-dir: right;
+  --fade-start-pos: 0;
+  --fade-end-pos: 100%;
+  scroll-padding-inline: var(--fade-size);
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  mask:
+    linear-gradient(black, black) no-clip subtract,
+    linear-gradient(to var(--fade-dir), black, transparent) var(--fade-start-pos) 0 /
+    var(--fade-start) 100% no-repeat no-clip,
+    linear-gradient(to var(--fade-dir), transparent, black) var(--fade-end-pos) 0 / var(--fade-end)
+    100% no-repeat no-clip;
+  animation:
+    astryx-reveal-fade-start linear both,
+    astryx-hide-fade-end linear both;
+  animation-timeline: scroll(self inline);
+  animation-range:
+    0 var(--fade-size),
+    calc(100% - var(--fade-size)) 100%;
+}
+
+.astryx-scroll-fade-x:dir(rtl) {
+  --fade-dir: left;
+  --fade-start-pos: 100%;
+  --fade-end-pos: 0;
+}
+
+@keyframes astryx-reveal-fade-start {
+  to {
+    --fade-start: var(--fade-size);
+  }
+}
+
+@keyframes astryx-hide-fade-end {
+  from {
+    --fade-end: var(--fade-size);
+  }
+}
+
+/* Legacy scrollbar fallback only where standard scrollbar-color is unsupported */
+@supports not (scrollbar-color: auto) {
+  .astryx-scroll-shadow,
+  .astryx-scroll-fade-x {
+    scrollbar-width: auto;
+  }
+
+  .astryx-scroll-shadow::-webkit-scrollbar,
+  .astryx-scroll-fade-x::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .astryx-scroll-shadow::-webkit-scrollbar-thumb,
+  .astryx-scroll-fade-x::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 9999px;
+  }
+
+  .astryx-scroll-shadow::-webkit-scrollbar-track,
+  .astryx-scroll-fade-x::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+}
+
+/* ==========================================================================
+   Astryx Surface & Prose Refinements (Streamdown compatibility)
+   ========================================================================== */
+
+.astryx-surface {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-low);
+}
+
+.astryx-interactive {
+  transition:
+    background-color 0ms,
+    box-shadow var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+
+.astryx-interactive:hover {
+  background-color: var(--overlay-hover);
+}
+
+.astryx-interactive:active {
+  background-color: var(--overlay-press);
+}
+
+.astryx-markdown {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--fg-primary);
+}
+
+.astryx-markdown :where(code):not(:where(pre code)) {
+  font-family: var(--font-astryx-mono);
+  font-size: 0.85em;
+  background-color: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 0.1rem 0.35rem;
+}
+
+.astryx-markdown :where(pre) {
+  font-family: var(--font-astryx-mono);
+  border-radius: var(--radius-element);
+}
+
+.astryx-markdown :where(a) {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.astryx-markdown :where(a:hover) {
+  text-decoration-color: var(--accent);
+}
+
+/* Honor reduced motion globally across transitions & animations */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
+  }
+}

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <title>minimal-ade</title>
+  <defs>
+    <linearGradient id="bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1A1B1F" />
+      <stop offset="100%" stop-color="#111112" />
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="28%" r="60%">
+      <stop offset="0%" stop-color="#3D87FF" stop-opacity="0.28" />
+      <stop offset="100%" stop-color="#225BFF" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="cobalt" x1="18" y1="16" x2="46" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3D87FF" />
+      <stop offset="100%" stop-color="#225BFF" />
+    </linearGradient>
+    <linearGradient id="bar" x1="23" y1="36" x2="41" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#E6EEFF" />
+      <stop offset="100%" stop-color="#8BB8FF" />
+    </linearGradient>
+  </defs>
+
+  <!-- Astryx obsidian squircle container -->
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)" />
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#glow)" />
+  <rect
+    x="2.75"
+    y="2.75"
+    width="58.5"
+    height="58.5"
+    rx="15.25"
+    stroke="#F2F4F6"
+    stroke-opacity="0.14"
+    stroke-width="1.5"
+  />
+
+  <!-- Concentric inner frame subtle hairline -->
+  <rect
+    x="8"
+    y="8"
+    width="48"
+    height="48"
+    rx="10"
+    stroke="#3D87FF"
+    stroke-opacity="0.14"
+    stroke-width="1"
+  />
+
+  <!-- Geometric ADE apex prism mark -->
+  <path
+    d="M18.5 46L30.25 18.2C30.92 16.6 33.08 16.6 33.75 18.2L45.5 46"
+    stroke="url(#cobalt)"
+    stroke-width="6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Agent / Workbench split command bar -->
+  <rect x="24.5" y="34.5" width="15" height="5" rx="2.5" fill="url(#bar)" />
+</svg>
