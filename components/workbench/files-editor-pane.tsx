@@ -34,10 +34,13 @@ import {
   History,
   Layers,
   Loader2,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   Save,
   Sparkles,
   Trash2,
+  WrapText,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -212,9 +215,22 @@ function flattenPaths(entries: WorkspaceFileEntry[]): string[] {
   return out;
 }
 
+function isBranchInTree(nodes: TreeItemData[], target: string): boolean {
+  for (const node of nodes) {
+    if (node.value === target) {
+      return Boolean(node.children && node.children.length > 0);
+    }
+    if (node.children?.length && isBranchInTree(node.children, target)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function renderTreeNodes(
   nodes: TreeItemData[],
   activePath: string | null,
+  onSelectFile: (path: string) => void,
   onDeleteFile?: (path: string) => void,
 ) {
   return nodes.map((node) => {
@@ -227,11 +243,12 @@ function renderTreeNodes(
         value={node.value}
         branch={isBranch}
         label={node.label}
+        onClick={isBranch ? undefined : () => onSelectFile(node.value)}
         className="outline-none"
       >
         <TreeItemLabel
           className={cn(
-            'group flex items-center gap-1.5 rounded-[var(--radius-inner,8px)] px-2 py-1 text-xs transition-colors cursor-pointer select-none',
+            'group flex w-full items-center gap-1.5 rounded-[var(--radius-inner,8px)] px-2 py-1 text-xs transition-colors cursor-pointer select-none',
             isSelected
               ? 'bg-[var(--accent)]/12 text-[var(--accent)] font-medium'
               : 'text-foreground/85 hover:bg-muted/70',
@@ -266,7 +283,7 @@ function renderTreeNodes(
                 e.stopPropagation();
                 onDeleteFile(node.value);
               }}
-              className="hidden rounded p-0.5 text-muted-foreground hover:bg-rose-500/15 hover:text-rose-500 group-hover:inline-flex"
+              className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-rose-500/15 hover:text-rose-500 group-hover:inline-flex"
               title={`Delete ${node.value}`}
             >
               <Trash2 className="h-3 w-3" />
@@ -275,7 +292,7 @@ function renderTreeNodes(
         </TreeItemLabel>
         {isBranch && node.children && (
           <TreeGroup className="space-y-0.5">
-            {renderTreeNodes(node.children, activePath, onDeleteFile)}
+            {renderTreeNodes(node.children, activePath, onSelectFile, onDeleteFile)}
           </TreeGroup>
         )}
       </TreeItem>
@@ -309,6 +326,8 @@ export function FilesEditorPane({
   const [creatingFile, setCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<string[]>(['src', 'app', 'components']);
+  const [treeOpen, setTreeOpen] = useState(true);
+  const [lineWrap, setLineWrap] = useState(false);
 
   // Artifact versioning
   const [artifactVersions, setArtifactVersions] = useState<ArtifactRecord[]>([]);
@@ -580,8 +599,8 @@ export function FilesEditorPane({
 
   const activeEditorKey =
     section === 'artifacts'
-      ? `artifact:${currentArtifactVersion?.id ?? 'none'}:v${selectedVersionIdx}:${themeMode}:${activeLanguageHint}`
-      : `file:${activeFilePath ?? 'none'}:${themeMode}:${activeLanguageHint}`;
+      ? `artifact:${currentArtifactVersion?.id ?? 'none'}:v${selectedVersionIdx}:${themeMode}:${activeLanguageHint}:wrap${lineWrap ? 1 : 0}`
+      : `file:${activeFilePath ?? 'none'}:${themeMode}:${activeLanguageHint}:wrap${lineWrap ? 1 : 0}`;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: editor rebuilds cleanly on key/mode changes
   useEffect(() => {
@@ -653,7 +672,7 @@ export function FilesEditorPane({
         saveKeymap,
         getLanguageExtension(activeLanguageHint),
         themeMode === 'dark' ? buildAstryxDarkExtension() : buildAstryxLightTheme(),
-        EditorView.lineWrapping,
+        ...(lineWrap ? [EditorView.lineWrapping] : []),
         updateListener,
       ],
     });
@@ -749,54 +768,75 @@ export function FilesEditorPane({
   };
 
   return (
-    <div className="flex h-full flex-col bg-[var(--bg-surface)] text-foreground">
+    <div className="flex h-full min-w-0 flex-col bg-[var(--bg-surface)] text-foreground">
       {/* Top Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-3 py-2">
-        <div className="flex items-center gap-1 rounded-[var(--radius-inner,8px)] bg-muted/70 p-0.5">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-border/70 px-2.5 py-1.5">
+        <div className="flex min-w-0 items-center gap-1">
           <button
             type="button"
-            onClick={() => setSection('files')}
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 text-xs font-medium transition-colors',
-              section === 'files'
-                ? 'bg-background text-foreground shadow-xs'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
+            onClick={() => setTreeOpen((v) => !v)}
+            aria-pressed={treeOpen}
+            aria-label={treeOpen ? 'Hide file tree' : 'Show file tree'}
+            title={treeOpen ? 'Hide file tree' : 'Show file tree'}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner,8px)] border border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            <Folder className="h-3.5 w-3.5" />
-            <span>Workspace</span>
-            <span className="font-mono text-[10px] text-muted-foreground">{filePaths.length}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSection('artifacts')}
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 text-xs font-medium transition-colors',
-              section === 'artifacts'
-                ? 'bg-background text-foreground shadow-xs'
-                : 'text-muted-foreground hover:text-foreground',
+            {treeOpen ? (
+              <PanelLeftClose className="h-3.5 w-3.5" />
+            ) : (
+              <PanelLeftOpen className="h-3.5 w-3.5" />
             )}
-          >
-            <Layers className="h-3.5 w-3.5" />
-            <span>Canvas Artifacts</span>
-            <span className="font-mono text-[10px] text-muted-foreground">{artifacts.length}</span>
           </button>
+
+          <div className="flex shrink-0 items-center gap-0.5 rounded-[var(--radius-inner,8px)] bg-muted/70 p-0.5">
+            <button
+              type="button"
+              onClick={() => setSection('files')}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-2 py-1 text-xs font-medium transition-colors',
+                section === 'files'
+                  ? 'bg-background text-foreground shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Folder className="h-3.5 w-3.5 shrink-0" />
+              <span>Workspace</span>
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {filePaths.length}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSection('artifacts')}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-2 py-1 text-xs font-medium transition-colors',
+                section === 'artifacts'
+                  ? 'bg-background text-foreground shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <Layers className="h-3.5 w-3.5 shrink-0" />
+              <span>Artifacts</span>
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {artifacts.length}
+              </span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {/* Code / Preview / Diff toggles */}
-          <div className="flex items-center rounded-[var(--radius-inner,8px)] border border-border/70 bg-background/80 p-0.5">
+          <div className="flex shrink-0 items-center rounded-[var(--radius-inner,8px)] border border-border/70 bg-background/80 p-0.5">
             <button
               type="button"
               onClick={() => setViewMode('code')}
               className={cn(
-                'inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 text-[11px] font-medium',
+                'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-2 py-0.5 text-[11px] font-medium',
                 viewMode === 'code'
                   ? 'bg-muted text-foreground'
                   : 'text-muted-foreground hover:text-foreground',
               )}
             >
-              <Code2 className="h-3 w-3" />
+              <Code2 className="h-3 w-3 shrink-0" />
               Code
             </button>
             {(isHtmlPreviewable || isMarkdownPreviewable) && (
@@ -804,13 +844,13 @@ export function FilesEditorPane({
                 type="button"
                 onClick={() => setViewMode('preview')}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 text-[11px] font-medium',
+                  'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-2 py-0.5 text-[11px] font-medium',
                   viewMode === 'preview'
                     ? 'bg-muted text-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                <Eye className="h-3 w-3" />
+                <Eye className="h-3 w-3 shrink-0" />
                 Preview
               </button>
             )}
@@ -818,16 +858,34 @@ export function FilesEditorPane({
               type="button"
               onClick={() => setViewMode('diff')}
               className={cn(
-                'inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 text-[11px] font-medium',
+                'inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[6px] px-2 py-0.5 text-[11px] font-medium',
                 viewMode === 'diff'
                   ? 'bg-muted text-foreground'
                   : 'text-muted-foreground hover:text-foreground',
               )}
             >
-              <FileDiff className="h-3 w-3" />
+              <FileDiff className="h-3 w-3 shrink-0" />
               Diff
             </button>
           </div>
+
+          {viewMode === 'code' && (
+            <button
+              type="button"
+              onClick={() => setLineWrap((v) => !v)}
+              aria-pressed={lineWrap}
+              aria-label={lineWrap ? 'Disable line wrap' : 'Enable line wrap'}
+              title={lineWrap ? 'Disable line wrap (horizontal scroll)' : 'Enable line wrap'}
+              className={cn(
+                'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner,8px)] border transition-colors',
+                lineWrap
+                  ? 'border-[var(--accent)]/40 bg-[var(--accent)]/12 text-[var(--accent)]'
+                  : 'border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}
+            >
+              <WrapText className="h-3.5 w-3.5" />
+            </button>
+          )}
 
           {isHtmlPreviewable && onOpenHtmlInPreview && (
             <button
@@ -840,11 +898,11 @@ export function FilesEditorPane({
                     : (activeFilePath ?? 'Preview'),
                 )
               }
-              className="inline-flex items-center gap-1 rounded-[var(--radius-inner,8px)] border border-border/70 px-2 py-1 text-[11px] text-foreground hover:bg-muted"
+              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner,8px)] border border-border/70 px-2 text-[11px] text-foreground hover:bg-muted"
               title="Launch live HTML preview in Preview tab"
             >
-              <ExternalLink className="h-3 w-3" />
-              <span className="hidden sm:inline">Live Preview</span>
+              <ExternalLink className="h-3 w-3 shrink-0" />
+              <span className="hidden sm:inline">Preview</span>
             </button>
           )}
 
@@ -853,21 +911,26 @@ export function FilesEditorPane({
             onClick={() => void handleSave()}
             disabled={saving}
             className={cn(
-              'inline-flex items-center gap-1 rounded-[var(--radius-inner,8px)] px-2.5 py-1 text-[11px] font-medium transition-colors',
+              'inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner,8px)] px-2 text-[11px] font-medium transition-colors',
               isDirty
                 ? 'bg-[var(--accent)] text-white hover:opacity-90'
                 : 'border border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
             title="Save (⌘S)"
           >
-            {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+            {saving ? (
+              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+            ) : (
+              <Save className="h-3 w-3 shrink-0" />
+            )}
             <span>{isDirty ? 'Save*' : 'Save'}</span>
           </button>
 
           <button
             type="button"
             onClick={() => void handleCopy()}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-inner,8px)] border border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="Copy contents"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner,8px)] border border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground"
             title="Copy contents"
           >
             {copied ? (
@@ -880,7 +943,8 @@ export function FilesEditorPane({
           <button
             type="button"
             onClick={handleDownload}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-inner,8px)] border border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="Download file"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner,8px)] border border-border/70 text-muted-foreground hover:bg-muted hover:text-foreground"
             title="Download file"
           >
             <Download className="h-3.5 w-3.5" />
@@ -888,144 +952,150 @@ export function FilesEditorPane({
         </div>
       </div>
 
-      {/* Main Split: Tree / Artifact List + Editor/Preview */}
+      {/* Main Split: Collapsible Tree / Artifact List + Editor/Preview */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* Left Navigation Column */}
-        <div className="flex w-48 shrink-0 flex-col border-r border-border/70 bg-muted/20">
-          {section === 'files' ? (
-            <>
-              <div className="flex items-center justify-between border-b border-border/60 px-2.5 py-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Files
-                </span>
-                <div className="flex items-center gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setCreatingFile((v) => !v)}
-                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    title="New file"
-                  >
-                    <FilePlus2 className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void loadWorkspaceFiles()}
-                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    title="Refresh workspace files"
-                  >
-                    <RefreshCw className={cn('h-3.5 w-3.5', loadingFiles && 'animate-spin')} />
-                  </button>
-                </div>
-              </div>
-
-              {creatingFile && (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void handleCreateFile();
-                  }}
-                  className="flex items-center gap-1 border-b border-border/60 bg-background/80 p-1.5"
-                >
-                  <input
-                    type="text"
-                    value={newFileName}
-                    onChange={(e) => setNewFileName(e.target.value)}
-                    placeholder="src/app.ts"
-                    ref={(el) => {
-                      if (el && document.activeElement !== el) el.focus();
-                    }}
-                    className="min-w-0 flex-1 rounded bg-muted/60 px-1.5 py-1 font-mono text-[11px] outline-none ring-1 ring-border focus:ring-[var(--accent)]"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setCreatingFile(false)}
-                    className="rounded p-1 text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </form>
-              )}
-
-              <div className="min-h-0 flex-1 overflow-auto p-1.5">
-                {treeItems.length === 0 ? (
-                  <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
-                    {loadingFiles ? 'Loading files…' : 'No workspace files yet.'}
+        {/* Collapsible Left Navigation Column */}
+        {treeOpen && (
+          <div className="flex w-44 shrink-0 flex-col border-r border-border/70 bg-muted/20">
+            {section === 'files' ? (
+              <>
+                <div className="flex items-center justify-between border-b border-border/60 px-2.5 py-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Files
+                  </span>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setCreatingFile((v) => !v)}
+                      className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      title="New file"
+                    >
+                      <FilePlus2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void loadWorkspaceFiles()}
+                      className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      title="Refresh workspace files"
+                    >
+                      <RefreshCw className={cn('h-3.5 w-3.5', loadingFiles && 'animate-spin')} />
+                    </button>
                   </div>
-                ) : (
-                  <Tree
-                    items={treeItems}
-                    value={activeFilePath}
-                    expanded={expandedFolders}
-                    onExpandedChange={(next) => setExpandedFolders(next)}
-                    onValueChange={(val) => {
-                      if (typeof val === 'string' && !val.endsWith('/')) {
-                        const isFolder = treeItems.some(
-                          (item) => item.value === val && item.children?.length,
-                        );
-                        if (!isFolder) {
+                </div>
+
+                {creatingFile && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleCreateFile();
+                    }}
+                    className="flex items-center gap-1 border-b border-border/60 bg-background/80 p-1.5"
+                  >
+                    <input
+                      type="text"
+                      value={newFileName}
+                      onChange={(e) => setNewFileName(e.target.value)}
+                      placeholder="src/app.ts"
+                      ref={(el) => {
+                        if (el && document.activeElement !== el) el.focus();
+                      }}
+                      className="min-w-0 flex-1 rounded bg-muted/60 px-1.5 py-1 font-mono text-[11px] outline-none ring-1 ring-border focus:ring-[var(--accent)]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setCreatingFile(false)}
+                      className="rounded p-1 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </form>
+                )}
+
+                <div className="min-h-0 flex-1 overflow-auto p-1.5">
+                  {treeItems.length === 0 ? (
+                    <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+                      {loadingFiles ? 'Loading files…' : 'No workspace files yet.'}
+                    </div>
+                  ) : (
+                    <Tree
+                      items={treeItems}
+                      value={activeFilePath}
+                      expanded={expandedFolders}
+                      onExpandedChange={(next) => setExpandedFolders(next)}
+                      onValueChange={(val) => {
+                        if (
+                          typeof val === 'string' &&
+                          !val.endsWith('/') &&
+                          !isBranchInTree(treeItems, val)
+                        ) {
                           setActiveFilePath(val);
                         }
-                      }
-                    }}
-                    onAction={(val) => {
-                      if (!val.endsWith('/')) {
-                        setActiveFilePath(val);
-                      }
-                    }}
-                    className="space-y-0.5"
-                  >
-                    {renderTreeNodes(treeItems, activeFilePath, handleDeleteFile)}
-                  </Tree>
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center justify-between border-b border-border/60 px-2.5 py-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Artifacts
-                </span>
-                <span className="font-mono text-[10px] text-muted-foreground">
-                  {artifacts.length}
-                </span>
-              </div>
-              <div className="min-h-0 flex-1 space-y-1 overflow-auto p-1.5">
-                {artifacts.length === 0 ? (
-                  <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
-                    Ask the assistant to build an HTML app, code snippet, or document.
-                  </div>
-                ) : (
-                  artifacts.map((art) => {
-                    const selected = currentArtifactVersion?.id === art.id;
-                    return (
-                      <button
-                        key={art.id}
-                        type="button"
-                        onClick={() => onSelectArtifact?.(art.id)}
-                        className={cn(
-                          'flex w-full flex-col items-start rounded-[var(--radius-inner,8px)] px-2.5 py-2 text-left transition-colors',
-                          selected
-                            ? 'bg-[var(--accent)]/12 text-foreground ring-1 ring-[var(--accent)]/30'
-                            : 'hover:bg-muted/70 text-foreground/85',
-                        )}
-                      >
-                        <div className="flex w-full items-center justify-between gap-1">
-                          <span className="truncate text-xs font-medium">{art.title}</span>
-                          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[9px] uppercase text-muted-foreground">
-                            {art.kind}
+                      }}
+                      onAction={(val) => {
+                        if (!val.endsWith('/') && !isBranchInTree(treeItems, val)) {
+                          setActiveFilePath(val);
+                        }
+                      }}
+                      className="space-y-0.5"
+                    >
+                      {renderTreeNodes(
+                        treeItems,
+                        activeFilePath,
+                        (path) => setActiveFilePath(path),
+                        handleDeleteFile,
+                      )}
+                    </Tree>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between border-b border-border/60 px-2.5 py-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Artifacts
+                  </span>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {artifacts.length}
+                  </span>
+                </div>
+                <div className="min-h-0 flex-1 space-y-1 overflow-auto p-1.5">
+                  {artifacts.length === 0 ? (
+                    <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
+                      Ask the assistant to build an HTML app, code snippet, or document.
+                    </div>
+                  ) : (
+                    artifacts.map((art) => {
+                      const selected = currentArtifactVersion?.id === art.id;
+                      return (
+                        <button
+                          key={art.id}
+                          type="button"
+                          onClick={() => onSelectArtifact?.(art.id)}
+                          className={cn(
+                            'flex w-full flex-col items-start rounded-[var(--radius-inner,8px)] px-2.5 py-2 text-left transition-colors',
+                            selected
+                              ? 'bg-[var(--accent)]/12 text-foreground ring-1 ring-[var(--accent)]/30'
+                              : 'hover:bg-muted/70 text-foreground/85',
+                          )}
+                        >
+                          <div className="flex w-full items-center justify-between gap-1">
+                            <span className="truncate text-xs font-medium">{art.title}</span>
+                            <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[9px] uppercase text-muted-foreground">
+                              {art.kind}
+                            </span>
+                          </div>
+                          <span className="mt-0.5 text-[10px] text-muted-foreground">
+                            v{art.version} · {formatRelativeTime(art.updatedAt)}
                           </span>
-                        </div>
-                        <span className="mt-0.5 text-[10px] text-muted-foreground">
-                          v{art.version} · {formatRelativeTime(art.updatedAt)}
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </>
-          )}
-        </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Right Editor / Preview Surface */}
         <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1064,12 +1134,12 @@ export function FilesEditorPane({
           </div>
 
           {/* Code / Preview / Diff Body */}
-          <div className="relative min-h-0 flex-1 overflow-auto">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
             {viewMode === 'code' && (
               <>
                 <div
                   ref={editorContainerRef}
-                  className="h-full min-h-[260px] w-full [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto"
+                  className="h-full min-h-[260px] w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:w-full [&_.cm-scroller]:overflow-auto"
                 />
 
                 {/* ChatGPT Canvas-style Floating "Ask AI to edit selection" Popover */}
@@ -1183,7 +1253,7 @@ export function FilesEditorPane({
             )}
 
             {viewMode === 'preview' && !isHtmlPreviewable && isMarkdownPreviewable && (
-              <div className="prose prose-sm dark:prose-invert max-w-none p-5">
+              <div className="prose prose-sm dark:prose-invert h-full max-w-none overflow-auto p-5">
                 <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground">
                   {activeContent}
                 </pre>
@@ -1191,7 +1261,7 @@ export function FilesEditorPane({
             )}
 
             {viewMode === 'diff' && (
-              <div className="font-mono text-xs leading-5">
+              <div className="h-full overflow-auto font-mono text-xs leading-5">
                 {diffLines.length === 0 ? (
                   <div className="p-6 text-center text-muted-foreground">
                     No differences to display.

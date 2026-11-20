@@ -1022,16 +1022,16 @@ const defined = defineRegistry(adeCatalog, {
       return (
         <div
           className={cn(
-            'flex flex-col justify-between gap-2 rounded-[var(--radius-element)] border bg-[var(--bg-surface)] p-3.5 shadow-[var(--shadow-low)]',
+            'flex min-w-0 flex-col justify-between gap-2 overflow-hidden rounded-[var(--radius-element)] border bg-[var(--bg-surface)] p-3.5 shadow-[var(--shadow-low)]',
             toneBorder,
           )}
         >
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold tracking-wide text-[var(--fg-muted)] uppercase">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-1.5">
+            <span className="min-w-0 truncate text-[11px] font-semibold tracking-wide text-[var(--fg-muted)] uppercase">
               {props.label}
             </span>
             {props.delta && (
-              <Badge variant={deltaVariant} className="font-mono text-[10px]">
+              <Badge variant={deltaVariant} className="shrink-0 font-mono text-[10px]">
                 {props.trend === 'up' && <ArrowUpRight className="size-3" aria-hidden="true" />}
                 {props.trend === 'down' && <ArrowDownRight className="size-3" aria-hidden="true" />}
                 {props.trend === 'neutral' && <Minus className="size-3" aria-hidden="true" />}
@@ -1039,11 +1039,13 @@ const defined = defineRegistry(adeCatalog, {
               </Badge>
             )}
           </div>
-          <div className="text-2xl font-semibold tracking-tight text-[var(--fg-primary)] tabular-nums">
+          <div className="min-w-0 break-words text-2xl font-semibold tracking-tight text-[var(--fg-primary)] tabular-nums">
             {props.value}
           </div>
           {props.caption && (
-            <p className="text-[11px] text-[var(--fg-secondary)]">{props.caption}</p>
+            <p className="min-w-0 break-words text-[11px] text-[var(--fg-secondary)]">
+              {props.caption}
+            </p>
           )}
         </div>
       );
@@ -1055,15 +1057,15 @@ const defined = defineRegistry(adeCatalog, {
         cols === 1
           ? 'grid-cols-1'
           : cols === 2
-            ? 'grid-cols-1 sm:grid-cols-2'
+            ? 'grid-cols-1 @sm:grid-cols-2'
             : cols === 4
-              ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
-              : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
+              ? 'grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 @3xl:grid-cols-4'
+              : 'grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3';
 
       return (
-        <section className="flex flex-col gap-3 rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] p-4">
+        <section className="@container flex min-w-0 flex-col gap-3 rounded-[var(--radius-container)] border border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)] p-4">
           {(props.title || props.description) && (
-            <div>
+            <div className="min-w-0">
               {props.title && (
                 <h4 className="text-sm font-semibold text-[var(--fg-primary)]">{props.title}</h4>
               )}
@@ -1072,7 +1074,7 @@ const defined = defineRegistry(adeCatalog, {
               )}
             </div>
           )}
-          <div className={cn('grid gap-2.5', gridClass)}>{children}</div>
+          <div className={cn('grid min-w-0 gap-2.5', gridClass)}>{children}</div>
         </section>
       );
     },

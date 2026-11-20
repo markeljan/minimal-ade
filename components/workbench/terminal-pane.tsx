@@ -515,10 +515,10 @@ export function TerminalPane({
       style={{ colorScheme: 'dark' }}
     >
       {/* Terminal Control Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#14151a] px-2.5 py-1.5 font-sans">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-white/10 bg-[#14151a] px-2.5 py-1.5 font-sans">
         {/* Tier Toggle: Instant Bash (WASM) <-> Cloud Sandbox (VM) */}
         <div
-          className="flex items-center rounded-[var(--radius-inner)] border border-white/10 bg-black/40 p-0.5 text-xs"
+          className="flex shrink-0 items-center rounded-[var(--radius-inner)] border border-white/10 bg-black/40 p-0.5 text-xs"
           role="tablist"
           aria-label="Terminal execution tier"
         >
@@ -528,13 +528,13 @@ export function TerminalPane({
             aria-selected={mode === 'just-bash'}
             onClick={() => handleSwitchMode('just-bash')}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 font-medium transition',
+              'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-2 py-1 font-medium transition',
               mode === 'just-bash'
                 ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/30'
                 : 'text-zinc-400 hover:text-zinc-200',
             )}
           >
-            <Cpu className="h-3.5 w-3.5" />
+            <Cpu className="h-3.5 w-3.5 shrink-0" />
             <span>Instant Bash</span>
           </button>
           <button
@@ -543,27 +543,27 @@ export function TerminalPane({
             aria-selected={mode === 'vercel-sandbox'}
             onClick={() => handleSwitchMode('vercel-sandbox')}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 font-medium transition',
+              'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-2 py-1 font-medium transition',
               mode === 'vercel-sandbox'
                 ? 'bg-blue-500/20 text-blue-300 ring-1 ring-blue-500/30'
                 : 'text-zinc-400 hover:text-zinc-200',
             )}
           >
-            <Cloud className="h-3.5 w-3.5" />
+            <Cloud className="h-3.5 w-3.5 shrink-0" />
             <span>Cloud Sandbox</span>
           </button>
         </div>
 
         {/* Quick Actions */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={handleClear}
             title="Clear terminal"
-            className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-inner)] border border-white/10 bg-white/5 px-2 text-xs text-zinc-300 transition hover:bg-white/10 hover:text-white"
+            className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner)] border border-white/10 bg-white/5 px-2 text-xs text-zinc-300 transition hover:bg-white/10 hover:text-white"
           >
-            <Trash2 className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Clear</span>
+            <Trash2 className="h-3.5 w-3.5 shrink-0" />
+            <span>Clear</span>
           </button>
 
           <button
@@ -571,14 +571,14 @@ export function TerminalPane({
             disabled={isSyncing}
             onClick={() => void handleSyncFiles()}
             title="Sync files between terminal and workspace"
-            className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-inner)] border border-white/10 bg-white/5 px-2 text-xs text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+            className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner)] border border-white/10 bg-white/5 px-2 text-xs text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
           >
             {isSyncing ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-400" />
             ) : (
-              <FolderSync className="h-3.5 w-3.5" />
+              <FolderSync className="h-3.5 w-3.5 shrink-0" />
             )}
-            <span className="hidden sm:inline">Sync Files</span>
+            <span>Sync</span>
           </button>
 
           <button
@@ -586,16 +586,16 @@ export function TerminalPane({
             disabled={isUpgrading}
             onClick={() => void handleUpgradeOrFx()}
             className={cn(
-              'inline-flex h-7 items-center gap-1 rounded-[var(--radius-inner)] px-2.5 text-xs font-medium transition disabled:opacity-50',
+              'inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner)] px-2.5 text-xs font-medium transition disabled:opacity-50',
               mode === 'vercel-sandbox'
                 ? 'border border-purple-500/30 bg-purple-500/15 text-purple-200 hover:bg-purple-500/25'
                 : 'bg-[#3d87ff] text-white hover:bg-[#5a9bff]',
             )}
           >
             {isUpgrading ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
             ) : (
-              <Sparkles className="h-3.5 w-3.5" />
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
             )}
             <span>{mode === 'vercel-sandbox' ? 'Run fx' : 'Upgrade VM'}</span>
           </button>
@@ -605,10 +605,10 @@ export function TerminalPane({
               type="button"
               onClick={() => onOpenTab('preview')}
               title={`Open preview (${sandboxStatus.previewUrl})`}
-              className="inline-flex h-7 items-center gap-1 rounded-[var(--radius-inner)] border border-emerald-500/30 bg-emerald-500/15 px-2 text-xs text-emerald-300 transition hover:bg-emerald-500/25"
+              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner)] border border-emerald-500/30 bg-emerald-500/15 px-2 text-xs text-emerald-300 transition hover:bg-emerald-500/25"
             >
-              <ExternalLink className="h-3 w-3" />
-              <span className="hidden md:inline">:3000</span>
+              <ExternalLink className="h-3 w-3 shrink-0" />
+              <span>:3000</span>
             </button>
           )}
         </div>

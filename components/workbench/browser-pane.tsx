@@ -423,15 +423,15 @@ export function BrowserPane({
       )}
     >
       {/* Row 1: Browser Chrome Navigation Bar */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-surface px-2.5 py-2">
-        <div className="flex items-center gap-0.5">
+      <div className="flex items-center gap-1.5 border-b border-border bg-surface px-2.5 py-2">
+        <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             disabled={!canGoBack || isLoading}
             onClick={() => void dispatchBrowserAction({ action: 'back' })}
             title="Back"
             aria-label="Go back"
-            className="astryx-interactive flex h-7 w-7 items-center justify-center rounded-[var(--radius-inner)] text-ink-secondary disabled:opacity-35"
+            className="astryx-interactive flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner)] text-ink-secondary disabled:opacity-35"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </button>
@@ -441,7 +441,7 @@ export function BrowserPane({
             onClick={() => void dispatchBrowserAction({ action: 'forward' })}
             title="Forward"
             aria-label="Go forward"
-            className="astryx-interactive flex h-7 w-7 items-center justify-center rounded-[var(--radius-inner)] text-ink-secondary disabled:opacity-35"
+            className="astryx-interactive flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner)] text-ink-secondary disabled:opacity-35"
           >
             <ArrowRight className="h-3.5 w-3.5" />
           </button>
@@ -451,7 +451,7 @@ export function BrowserPane({
             onClick={() => void handleReload()}
             title="Reload"
             aria-label="Reload page"
-            className="astryx-interactive flex h-7 w-7 items-center justify-center rounded-[var(--radius-inner)] text-ink-secondary disabled:opacity-35"
+            className="astryx-interactive flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner)] text-ink-secondary disabled:opacity-35"
           >
             {isLoading ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
@@ -467,16 +467,16 @@ export function BrowserPane({
             e.preventDefault();
             void handleNavigate(urlInput);
           }}
-          className="relative flex min-w-[160px] flex-1 items-center"
+          className="relative flex min-w-0 flex-1 items-center"
         >
-          <Globe className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-ink-muted" />
+          <Globe className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 shrink-0 text-ink-muted" />
           <input
             type="text"
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
             placeholder="workspace://index.html or https://example.com"
             aria-label="Browser URL"
-            className="h-7 w-full rounded-[var(--radius-inner)] border border-border bg-surface-subtle pr-8 pl-8 font-mono text-xs text-foreground placeholder:text-ink-muted focus:border-accent focus:outline-none"
+            className="h-7 min-w-0 w-full truncate rounded-[var(--radius-inner)] border border-border bg-surface-subtle pr-7 pl-8 font-mono text-xs text-foreground placeholder:text-ink-muted focus:border-accent focus:outline-none"
           />
           {isExternalHttpUrl && (
             <a
@@ -493,7 +493,7 @@ export function BrowserPane({
 
         {/* Viewport Preset Toggle */}
         <fieldset
-          className="flex items-center rounded-[var(--radius-inner)] border border-border bg-surface-subtle p-0.5"
+          className="flex shrink-0 items-center rounded-[var(--radius-inner)] border border-border bg-surface-subtle p-0.5"
           aria-label="Viewport size"
         >
           {(
@@ -511,7 +511,7 @@ export function BrowserPane({
               aria-label={title}
               aria-pressed={viewportPreset === id}
               className={cn(
-                'flex h-6 w-6 items-center justify-center rounded-[6px] transition',
+                'flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition',
                 viewportPreset === id
                   ? 'bg-surface text-foreground shadow-xs'
                   : 'text-ink-muted hover:text-foreground',
@@ -524,9 +524,9 @@ export function BrowserPane({
       </div>
 
       {/* Row 2: Mode Pills + Take Control / Hand Back Toggle */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface-subtle/70 px-2.5 py-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-border bg-surface-subtle/70 px-2.5 py-1.5">
         <div
-          className="flex items-center gap-1 overflow-x-auto"
+          className="astryx-scroll-fade-x flex min-w-0 max-w-full flex-nowrap items-center gap-1 overflow-x-auto py-0.5"
           role="tablist"
           aria-label="Browser stream mode"
         >
@@ -543,14 +543,17 @@ export function BrowserPane({
                 aria-selected={isActive}
                 onClick={() => handleModeChange(opt.id)}
                 className={cn(
-                  'inline-flex shrink-0 items-center gap-1.5 rounded-[var(--radius-inner)] px-2.5 py-1 text-xs font-medium transition',
+                  'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-inner)] px-2.5 py-1 text-xs font-medium transition',
                   isActive
                     ? 'bg-surface text-foreground shadow-xs ring-1 ring-border-strong'
                     : 'text-ink-secondary hover:bg-overlay-hover hover:text-foreground',
                 )}
               >
                 {isLiveReady && (
-                  <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full bg-success"
+                    aria-hidden="true"
+                  />
                 )}
                 <span className="hidden sm:inline">{opt.label}</span>
                 <span className="sm:hidden">{opt.shortLabel}</span>
@@ -559,15 +562,15 @@ export function BrowserPane({
           })}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
             onClick={() => void handleScreenshot()}
             disabled={isLoading}
             title="Capture screenshot"
-            className="astryx-interactive inline-flex h-7 items-center gap-1 rounded-[var(--radius-inner)] border border-border bg-surface px-2 text-xs text-ink-secondary hover:text-foreground disabled:opacity-40"
+            className="astryx-interactive inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner)] border border-border bg-surface px-2 text-xs text-ink-secondary hover:text-foreground disabled:opacity-40"
           >
-            <Camera className="h-3.5 w-3.5" />
+            <Camera className="h-3.5 w-3.5 shrink-0" />
             <span className="hidden md:inline">Capture</span>
           </button>
 
@@ -577,7 +580,7 @@ export function BrowserPane({
             onClick={handleToggleControl}
             aria-pressed={hasControl}
             className={cn(
-              'inline-flex h-7 items-center gap-1.5 rounded-[var(--radius-inner)] px-2.5 text-xs font-semibold transition',
+              'inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-inner)] px-2.5 text-xs font-semibold transition',
               hasControl
                 ? 'bg-accent text-accent-foreground shadow-xs hover:bg-accent-hover'
                 : 'border border-border-strong bg-surface text-foreground hover:bg-overlay-hover',
@@ -585,18 +588,18 @@ export function BrowserPane({
           >
             <span
               className={cn(
-                'h-1.5 w-1.5 rounded-full',
+                'h-1.5 w-1.5 shrink-0 rounded-full',
                 hasControl ? 'animate-pulse bg-white' : 'bg-success',
               )}
             />
             {hasControl ? (
               <>
-                <Hand className="h-3.5 w-3.5" />
+                <Hand className="h-3.5 w-3.5 shrink-0" />
                 <span>Hand Back to Agent</span>
               </>
             ) : (
               <>
-                <Eye className="h-3.5 w-3.5" />
+                <Eye className="h-3.5 w-3.5 shrink-0" />
                 <span>Take Control</span>
               </>
             )}

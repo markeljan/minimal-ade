@@ -207,6 +207,8 @@ export function AdeShell({
 
   // Resizable split controller (@ui-sdk/react/resizable)
   const resizableController = useMemo(() => createResizableController(), []);
+  const prevWorkbenchOpenRef = useRef(workbenchOpen);
+  const lastExpandedWorkbenchSizeRef = useRef<number | null>(null);
 
   const refreshDiagnosticsRef = useRef<
     ((overrideSettings?: ClientProviderSettings) => Promise<void>) | null
@@ -253,14 +255,23 @@ export function AdeShell({
 
   // Synchronize Resizable panel width smoothly when workbenchOpen changes
   useEffect(() => {
+    const wasOpen = prevWorkbenchOpenRef.current;
+    prevWorkbenchOpenRef.current = workbenchOpen;
+
+    // Auto-collapse left sidebar when opening the Workbench on < 1360px viewports
+    // (only on false -> true transition so users can still re-open the sidebar anytime)
+    if (!wasOpen && workbenchOpen && typeof window !== 'undefined' && window.innerWidth < 1360) {
+      setSidebarOpen(false);
+    }
+
     const frame = window.requestAnimationFrame(() => {
       if (workbenchOpen) {
-        if (resizableController.isCollapsed('workbench')) {
-          resizableController.expand('workbench');
-        }
+        const remembered = lastExpandedWorkbenchSizeRef.current;
+        const targetWorkbench =
+          remembered !== null && remembered >= 35 && remembered <= 68 ? remembered : 48;
         const current = resizableController.getLayout();
-        if (!current[1] || current[1] < 20) {
-          resizableController.setLayout([52, 48]);
+        if (resizableController.isCollapsed('workbench') || !current[1] || current[1] < 35) {
+          resizableController.setLayout([100 - targetWorkbench, targetWorkbench]);
         }
       } else {
         resizableController.collapse('workbench');
@@ -774,8 +785,12 @@ export function AdeShell({
           controller={resizableController}
           defaultLayout={initialHasArtifacts ? [52, 48] : [100, 0]}
           onLayoutCommit={(layout) => {
-            if (workbenchOpen && layout[1] !== undefined && layout[1] < 4) {
-              setWorkbenchOpen(false);
+            if (workbenchOpen && layout[1] !== undefined) {
+              if (layout[1] < 4) {
+                setWorkbenchOpen(false);
+              } else if (layout[1] >= 35) {
+                lastExpandedWorkbenchSizeRef.current = layout[1];
+              }
             }
           }}
           className="flex min-h-0 flex-1 overflow-hidden"
@@ -849,12 +864,12 @@ export function AdeShell({
             collapsible
             collapsedSize={0}
             defaultSize={initialHasArtifacts ? 48 : 0}
-            minSize={28}
-            maxSize={72}
+            minSize={35}
+            maxSize={68}
             className={cn(
               'min-w-0 flex-col overflow-hidden',
               workbenchOpen
-                ? 'fixed inset-0 z-30 flex bg-[var(--bg-surface)] md:static md:z-auto'
+                ? 'fixed inset-0 z-30 flex bg-[var(--bg-surface)] md:static md:z-auto md:min-w-[420px]'
                 : 'hidden pointer-events-none',
             )}
           >

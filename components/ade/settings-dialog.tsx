@@ -285,51 +285,59 @@ export function SettingsDialog({
                 </div>
 
                 <div className="space-y-1.5">
-                  {(diagnostics?.tiers ?? []).map((tier) => (
-                    <div
-                      key={tier.id}
-                      className={cn(
-                        'flex items-center justify-between gap-3 rounded-[var(--radius-element)] border px-3 py-2 text-xs',
-                        tier.active
-                          ? 'border-[var(--accent)]/45 bg-[var(--accent-soft)]'
-                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)]',
-                      )}
-                    >
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <span
-                          className={cn(
-                            'flex size-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] font-semibold',
-                            tier.active
-                              ? 'bg-[var(--accent)] text-[var(--accent-foreground)]'
-                              : tier.configured
-                                ? 'bg-[var(--status-success-soft)] text-[var(--status-success)]'
-                                : 'bg-[var(--bg-surface-subtle)] text-[var(--fg-muted)]',
-                          )}
-                        >
-                          {tier.tier}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="truncate font-medium text-[var(--fg-primary)]">
-                            {tier.label}
-                          </div>
-                          {tier.detail && (
-                            <div className="truncate font-mono text-[10.5px] text-[var(--fg-muted)]">
-                              {tier.detail}
+                  {(diagnostics?.tiers ?? []).map((tier) => {
+                    const tierBadgeLabel =
+                      tier.id === 'user-byok'
+                        ? '2a'
+                        : tier.id === 'user-vercel-oauth'
+                          ? '2b'
+                          : String(tier.tier);
+                    return (
+                      <div
+                        key={tier.id}
+                        className={cn(
+                          'flex items-center justify-between gap-3 rounded-[var(--radius-element)] border px-3 py-2 text-xs',
+                          tier.active
+                            ? 'border-[var(--accent)]/45 bg-[var(--accent-soft)]'
+                            : 'border-[var(--border-subtle)] bg-[var(--bg-surface)]',
+                        )}
+                      >
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span
+                            className={cn(
+                              'flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[10px] font-semibold',
+                              tier.active
+                                ? 'bg-[var(--accent)] text-[var(--accent-foreground)]'
+                                : tier.configured
+                                  ? 'bg-[var(--status-success-soft)] text-[var(--status-success)]'
+                                  : 'bg-[var(--bg-surface-subtle)] text-[var(--fg-muted)]',
+                            )}
+                          >
+                            {tierBadgeLabel}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-[var(--fg-primary)]">
+                              {tier.label}
                             </div>
+                            {tier.detail && (
+                              <div className="truncate font-mono text-[10.5px] text-[var(--fg-muted)]">
+                                {tier.detail}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="shrink-0">
+                          {tier.active ? (
+                            <Badge variant="accent">Active</Badge>
+                          ) : tier.configured ? (
+                            <Badge variant="success">Ready</Badge>
+                          ) : (
+                            <Badge variant="secondary">Not set</Badge>
                           )}
                         </div>
                       </div>
-                      <div className="shrink-0">
-                        {tier.active ? (
-                          <Badge variant="accent">Active</Badge>
-                        ) : tier.configured ? (
-                          <Badge variant="success">Ready</Badge>
-                        ) : (
-                          <Badge variant="secondary">Not set</Badge>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 

@@ -977,14 +977,14 @@ export function ChatPane({
   }, [providerSettings]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-[var(--bg-canvas)]">
+    <div className="relative flex h-full min-h-0 min-w-0 flex-col bg-[var(--bg-canvas)]">
       {/* Scrollable Conversation Area */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="astryx-scroll-shadow min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-8"
+        className="astryx-scroll-shadow min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-6 pb-8"
       >
-        <div className="mx-auto w-full max-w-3xl">
+        <div className="mx-auto w-full min-w-0 max-w-3xl">
           {messages.length === 0 ? (
             /* Serene Astryx Empty State + 6 Interactive Starter Prompt Cards */
             <div className="flex flex-col items-center py-8 sm:py-14">
@@ -1060,9 +1060,12 @@ export function ChatPane({
                   !isUser && !isLastMessage && msgIndex >= 3 && msgIndex % 4 === 3;
 
                 return (
-                  <div key={msg.id}>
+                  <div key={msg.id} className="min-w-0">
                     <article
-                      className={cn('group flex flex-col', isUser ? 'items-end' : 'items-start')}
+                      className={cn(
+                        'group flex min-w-0 flex-col',
+                        isUser ? 'items-end' : 'items-start',
+                      )}
                     >
                       {isUser ? (
                         /* USER TURN */
@@ -1172,18 +1175,18 @@ export function ChatPane({
                         </div>
                       ) : (
                         /* ASSISTANT TURN — Exact interleaved AI SDK 7 parts */
-                        <div className="w-full space-y-2">
+                        <div className="w-full min-w-0 space-y-2">
                           {/* Assistant Turn Header */}
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className="flex size-6 items-center justify-center rounded-[8px] bg-[var(--accent-soft)] text-[var(--accent)]">
+                          <div className="flex min-w-0 items-center justify-between gap-2">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="flex size-6 shrink-0 items-center justify-center rounded-[8px] bg-[var(--accent-soft)] text-[var(--accent)]">
                                 <Bot className="size-3.5" />
                               </span>
-                              <span className="text-xs font-semibold text-[var(--fg-primary)]">
+                              <span className="shrink-0 text-xs font-semibold text-[var(--fg-primary)]">
                                 Minimal ADE
                               </span>
                               {msg.metadata?.modelId && (
-                                <span className="font-mono text-[10.5px] text-[var(--fg-muted)]">
+                                <span className="truncate font-mono text-[10.5px] text-[var(--fg-muted)]">
                                   {msg.metadata.modelId}
                                 </span>
                               )}
@@ -1202,7 +1205,7 @@ export function ChatPane({
                           </div>
 
                           {/* Interleaved Parts */}
-                          <div className="pl-8">
+                          <div className="min-w-0 pl-8">
                             {msg.parts.map((part, partIdx) => {
                               // 1. Text
                               if (part.type === 'text') {

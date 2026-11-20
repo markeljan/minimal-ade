@@ -73,15 +73,14 @@ export interface WorkbenchPaneProps {
 const WORKBENCH_TABS: Array<{
   id: WorkbenchTab;
   label: string;
-  shortLabel: string;
   icon: typeof Eye;
 }> = [
-  { id: 'preview', label: 'Preview', shortLabel: 'Preview', icon: Eye },
-  { id: 'browser', label: 'Browser', shortLabel: 'Browser', icon: Globe },
-  { id: 'terminal', label: 'Terminal', shortLabel: 'Term', icon: Terminal },
-  { id: 'files', label: 'Files & Canvas', shortLabel: 'Files', icon: Code2 },
-  { id: 'genui', label: 'GenUI', shortLabel: 'GenUI', icon: Sparkles },
-  { id: 'trace', label: 'Trace', shortLabel: 'Trace', icon: Activity },
+  { id: 'preview', label: 'Preview', icon: Eye },
+  { id: 'browser', label: 'Browser', icon: Globe },
+  { id: 'terminal', label: 'Terminal', icon: Terminal },
+  { id: 'files', label: 'Files', icon: Code2 },
+  { id: 'genui', label: 'GenUI', icon: Sparkles },
+  { id: 'trace', label: 'Trace', icon: Activity },
 ];
 
 export function WorkbenchPane({
@@ -136,11 +135,11 @@ export function WorkbenchPane({
       className="flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)] bg-[var(--bg-surface)]"
     >
       {/* Tabbed Header */}
-      <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)]/65 px-2.5">
+      <div className="flex h-11 shrink-0 items-center justify-between gap-1.5 border-b border-[var(--border-subtle)] bg-[var(--bg-surface-subtle)]/65 px-2">
         <div
           role="tablist"
           aria-label="Workbench panes"
-          className="astryx-scroll-fade-x flex min-w-0 flex-1 items-center gap-0.5 py-1"
+          className="astryx-scroll-fade-x flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1"
         >
           {WORKBENCH_TABS.map((tab) => {
             const Icon = tab.icon;
@@ -154,7 +153,7 @@ export function WorkbenchPane({
                 aria-selected={selected}
                 onClick={() => onSelectTab(tab.id)}
                 className={cn(
-                  'inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-[var(--radius-inner)] px-2.5 text-xs font-medium transition-colors',
+                  'inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[var(--radius-inner)] px-2 text-xs font-medium transition-colors',
                   selected
                     ? 'bg-[var(--bg-surface)] text-[var(--fg-primary)] shadow-[var(--shadow-low)] ring-1 ring-[var(--border-subtle)]'
                     : 'text-[var(--fg-secondary)] hover:bg-[var(--overlay-hover)] hover:text-[var(--fg-primary)]',
@@ -166,10 +165,9 @@ export function WorkbenchPane({
                     selected ? 'text-[var(--accent)]' : 'text-[var(--fg-muted)]',
                   )}
                 />
-                <span className="hidden xl:inline">{tab.label}</span>
-                <span className="xl:hidden">{tab.shortLabel}</span>
+                <span>{tab.label}</span>
                 {count !== null && (
-                  <span className="rounded-full bg-[var(--bg-surface-subtle)] px-1.5 py-0.2 font-mono text-[10px] text-[var(--fg-muted)]">
+                  <span className="shrink-0 rounded-full bg-[var(--bg-surface-subtle)] px-1.5 py-0.2 font-mono text-[10px] text-[var(--fg-muted)]">
                     {count}
                   </span>
                 )}

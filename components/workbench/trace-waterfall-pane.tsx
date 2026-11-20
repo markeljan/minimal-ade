@@ -312,32 +312,32 @@ export function TraceWaterfallPane({
     harnessMode === 'fx' ? 'fx (libfx)' : harnessMode === 'workflow' ? 'Workflow 5' : 'AI SDK 7';
 
   return (
-    <div className="flex h-full flex-col bg-[var(--bg-surface)] text-foreground">
+    <div className="flex h-full min-w-0 flex-col bg-[var(--bg-surface)] text-foreground">
       {/* Telemetry Summary Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-3.5 py-2.5">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-            <Activity className="h-3.5 w-3.5 text-[var(--accent)]" />
-            <span>Trace Waterfall</span>
-            <span className="rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            <Activity className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
+            <span className="whitespace-nowrap">Trace Waterfall</span>
+            <span className="shrink-0 whitespace-nowrap rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
               {spans.length} {spans.length === 1 ? 'span' : 'spans'}
             </span>
           </div>
           {totalDurationMs > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-muted/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-              <Clock className="h-3 w-3" />
+            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-muted/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+              <Clock className="h-3 w-3 shrink-0" />
               {formatDuration(totalDurationMs)}
             </span>
           )}
           {hasRunningSpan && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/12 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400">
+            <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-blue-500/12 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400">
               <span className="h-1.5 w-1.5 rounded-full bg-current animate-ping" />
               Live
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           {spans.length > 0 && onClear && (
             <button
               type="button"
@@ -345,10 +345,10 @@ export function TraceWaterfallPane({
                 setSelectedId(null);
                 onClear();
               }}
-              className="inline-flex items-center gap-1 rounded-[var(--radius-inner,8px)] border border-border/70 px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[var(--radius-inner,8px)] border border-border/70 px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
               title="Clear trace spans"
             >
-              <Trash2 className="h-3 w-3" />
+              <Trash2 className="h-3 w-3 shrink-0" />
               <span>Clear</span>
             </button>
           )}
@@ -356,65 +356,67 @@ export function TraceWaterfallPane({
       </div>
 
       {/* Model / Billing / Token Telemetry Cards */}
-      <div className="grid grid-cols-2 gap-2 border-b border-border/60 bg-muted/25 px-3.5 py-2.5 sm:grid-cols-4">
-        <div className="rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Model & Harness
+      <div className="@container border-b border-border/60 bg-muted/25 px-3.5 py-2.5">
+        <div className="grid grid-cols-2 gap-2 @lg:grid-cols-4">
+          <div className="min-w-0 rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
+            <div className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Model & Harness
+            </div>
+            <div className="mt-0.5 truncate font-mono text-xs font-medium text-foreground">
+              {modelId ?? 'auto'}
+            </div>
+            <div className="truncate text-[10px] text-muted-foreground">{harnessLabel}</div>
           </div>
-          <div className="mt-0.5 truncate font-mono text-xs font-medium text-foreground">
-            {modelId ?? 'auto'}
-          </div>
-          <div className="text-[10px] text-muted-foreground">{harnessLabel}</div>
-        </div>
 
-        <div className="rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Billing Tier
+          <div className="min-w-0 rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
+            <div className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Billing Tier
+            </div>
+            <div className="mt-0.5 truncate text-xs font-medium text-foreground">
+              {billingSource?.label ?? 'Resolving…'}
+            </div>
+            <div className="truncate text-[10px] text-muted-foreground">
+              {billingSource?.providerName ?? '5-Tier Waterfall'}
+            </div>
           </div>
-          <div className="mt-0.5 truncate text-xs font-medium text-foreground">
-            {billingSource?.label ?? 'Resolving…'}
-          </div>
-          <div className="truncate text-[10px] text-muted-foreground">
-            {billingSource?.providerName ?? '5-Tier Waterfall'}
-          </div>
-        </div>
 
-        <div className="rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Tokens (In / Out)
+          <div className="min-w-0 rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
+            <div className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Tokens (In / Out)
+            </div>
+            <div className="mt-0.5 truncate font-mono text-xs font-medium text-foreground">
+              {aggregatedTokens.inputTokens.toLocaleString()} /{' '}
+              {aggregatedTokens.outputTokens.toLocaleString()}
+            </div>
+            <div className="truncate font-mono text-[10px] text-muted-foreground">
+              Total {aggregatedTokens.totalTokens.toLocaleString()}
+              {aggregatedTokens.reasoningTokens
+                ? ` · ${aggregatedTokens.reasoningTokens.toLocaleString()} rsn`
+                : ''}
+            </div>
           </div>
-          <div className="mt-0.5 font-mono text-xs font-medium text-foreground">
-            {aggregatedTokens.inputTokens.toLocaleString()} /{' '}
-            {aggregatedTokens.outputTokens.toLocaleString()}
-          </div>
-          <div className="font-mono text-[10px] text-muted-foreground">
-            Total {aggregatedTokens.totalTokens.toLocaleString()}
-            {aggregatedTokens.reasoningTokens
-              ? ` · ${aggregatedTokens.reasoningTokens.toLocaleString()} rsn`
-              : ''}
-          </div>
-        </div>
 
-        <div className="rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
-          <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            <span>Est. Cost</span>
-            <Coins className="h-3 w-3" />
-          </div>
-          <div className="mt-0.5 font-mono text-xs font-medium text-foreground">
-            {aggregatedTokens.estimatedCostUsd && aggregatedTokens.estimatedCostUsd > 0
-              ? `$${aggregatedTokens.estimatedCostUsd.toFixed(4)}`
-              : '$0.0000'}
-          </div>
-          <div className="font-mono text-[10px] text-muted-foreground">
-            {aggregatedTokens.cacheReadTokens
-              ? `${aggregatedTokens.cacheReadTokens.toLocaleString()} cached`
-              : 'Live estimate'}
+          <div className="min-w-0 rounded-[var(--radius-inner,8px)] border border-border/60 bg-background/70 px-2.5 py-1.5">
+            <div className="flex items-center justify-between gap-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              <span className="truncate">Est. Cost</span>
+              <Coins className="h-3 w-3 shrink-0" />
+            </div>
+            <div className="mt-0.5 truncate font-mono text-xs font-medium text-foreground">
+              {aggregatedTokens.estimatedCostUsd && aggregatedTokens.estimatedCostUsd > 0
+                ? `$${aggregatedTokens.estimatedCostUsd.toFixed(4)}`
+                : '$0.0000'}
+            </div>
+            <div className="truncate font-mono text-[10px] text-muted-foreground">
+              {aggregatedTokens.cacheReadTokens
+                ? `${aggregatedTokens.cacheReadTokens.toLocaleString()} cached`
+                : 'Live estimate'}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Filter Bar */}
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-border/60 px-3.5 py-1.5">
+      <div className="flex flex-wrap items-center gap-1 border-b border-border/60 px-3.5 py-1.5">
         {(
           [
             ['all', 'All'],
@@ -430,7 +432,7 @@ export function TraceWaterfallPane({
             type="button"
             onClick={() => setFilter(key)}
             className={cn(
-              'shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors',
+              'shrink-0 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors',
               filter === key
                 ? 'bg-foreground text-background'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -484,26 +486,38 @@ export function TraceWaterfallPane({
             className="w-full min-w-[460px] text-xs select-none"
           >
             {/* Header Row + Time Axis */}
-            <WaterfallHeaderRow className="sticky top-0 z-10 grid grid-cols-[minmax(170px,1.2fr)_72px_minmax(180px,2fr)] items-center border-b border-border/70 bg-background/95 backdrop-blur-sm">
+            <WaterfallHeaderRow className="sticky top-0 z-10 grid grid-cols-[minmax(150px,1.15fr)_84px_minmax(180px,2fr)] items-center border-b border-border/70 bg-background/95 backdrop-blur-sm">
               <WaterfallColumnHeader className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Span
               </WaterfallColumnHeader>
-              <WaterfallColumnHeader className="px-2 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <WaterfallColumnHeader className="whitespace-nowrap pl-2 pr-3.5 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Duration
               </WaterfallColumnHeader>
-              <WaterfallAxis maxTicks={5} className="relative h-7 border-l border-border/60 px-2">
-                {(state) =>
-                  state.ticks.map((tick) => (
-                    <WaterfallTick
-                      key={tick.time}
-                      time={tick.time}
-                      style={{ left: 'var(--waterfall-tick)' }}
-                      className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 font-mono text-[10px] text-muted-foreground"
-                    >
-                      {formatDuration(tick.time)}
-                    </WaterfallTick>
-                  ))
-                }
+              <WaterfallAxis
+                maxTicks={5}
+                className="relative h-7 overflow-hidden border-l border-border/60 pl-3 pr-2.5"
+              >
+                {(state) => (
+                  <div className="relative h-full w-full">
+                    {state.ticks.map((tick) => (
+                      <WaterfallTick
+                        key={tick.time}
+                        time={tick.time}
+                        style={{ left: 'var(--waterfall-tick)' }}
+                        className={cn(
+                          'absolute top-1/2 -translate-y-1/2 whitespace-nowrap font-mono text-[10px] text-muted-foreground',
+                          tick.position <= 2
+                            ? 'translate-x-0'
+                            : tick.position >= 98
+                              ? '-translate-x-full'
+                              : '-translate-x-1/2',
+                        )}
+                      >
+                        {formatDuration(tick.time)}
+                      </WaterfallTick>
+                    ))}
+                  </div>
+                )}
               </WaterfallAxis>
             </WaterfallHeaderRow>
 
@@ -522,7 +536,7 @@ export function TraceWaterfallPane({
                     key={row.item.value}
                     value={row.item.value}
                     className={cn(
-                      'grid grid-cols-[minmax(170px,1.2fr)_72px_minmax(180px,2fr)] items-center transition-colors cursor-pointer',
+                      'grid grid-cols-[minmax(150px,1.15fr)_84px_minmax(180px,2fr)] items-center transition-colors cursor-pointer',
                       isSelected ? 'bg-[var(--accent)]/8' : 'hover:bg-muted/45',
                     )}
                   >
@@ -542,11 +556,11 @@ export function TraceWaterfallPane({
                       <span className="truncate font-medium text-foreground">{span.name}</span>
                     </WaterfallRowHeader>
 
-                    <WaterfallCell className="px-2 py-2 text-right font-mono text-[11px] text-muted-foreground">
+                    <WaterfallCell className="whitespace-nowrap pl-2 pr-3.5 py-2 text-right font-mono text-[11px] text-muted-foreground">
                       {formatDuration(row.item.duration)}
                     </WaterfallCell>
 
-                    <WaterfallBar className="relative h-8 border-l border-border/50 px-2">
+                    <WaterfallBar className="relative h-8 border-l border-border/50 pl-3 pr-2.5">
                       <div className="relative h-full w-full">
                         <div
                           className={cn(
