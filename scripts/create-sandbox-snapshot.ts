@@ -123,6 +123,7 @@ async function main(): Promise<void> {
     ports: [3000, 4848, 8080],
     resources: { vcpus: flags.vcpus },
     timeout: ms('30m'),
+    persistent: false,
     tags: {
       app: 'minimal-ade',
       role: 'snapshot-builder',
@@ -143,19 +144,37 @@ async function main(): Promise<void> {
       },
     };
 
-    console.log('\n→ Installing agent-browser & Chromium runtime...');
-    await installAgentBrowserInVercelSandbox(sessionAdapter, {
-      onStep: (event) => {
-        const marker = event.status === 'done' ? '✓' : event.status === 'error' ? '!' : '·';
-        console.log(`  ${marker} [agent-browser] ${event.step}`);
-      },
-    });
+    const pkgMgrCheck = await sandbox.runCommand('bash', [
+      '-lc',
+      'if command -v apt-get >/dev/null 2>&1; then echo apt; elif command -v dnf >/dev/null 2>&1; then echo dnf; else echo unknown; fi',
+    ]);
+    const pkgMgr = (await pkgMgrCheck.stdout()).trim();
+
+    console.log(`\n→ Installing agent-browser & Chromium runtime (package manager: ${pkgMgr})...`);
+    if (pkgMgr === 'apt') {
+      await runStep(sandbox, 'Installing agent-browser CLI', 'npm install -g agent-browser', {
+        timeoutMs: ms('5m'),
+      });
+      await runStep(
+        sandbox,
+        'Installing Chromium & Ubuntu system dependencies',
+        'sudo env PATH="$PATH" agent-browser install --with-deps || (sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libgtk-3-0 libdbus-1-3 || sudo apt-get install -y --no-install-recommends libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libgtk-3-0 libdbus-1-3) && agent-browser install',
+        { timeoutMs: ms('10m') },
+      );
+    } else {
+      await installAgentBrowserInVercelSandbox(sessionAdapter, {
+        onStep: (event) => {
+          const marker = event.status === 'done' ? '✓' : event.status === 'error' ? '!' : '·';
+          console.log(`  ${marker} [agent-browser] ${event.step}`);
+        },
+      });
+    }
 
     if (!flags.skipDesktop) {
       await runStep(
         sandbox,
         'Installing screen-relay CLI & desktop engine',
-        'npm install -g screen-relay && screen-relay install --yes',
+        'npm install -g screen-relay && sudo env PATH="$PATH" screen-relay install --yes || screen-relay install --yes',
         { timeoutMs: ms('15m') },
       );
 
@@ -177,7 +196,7 @@ async function main(): Promise<void> {
     await runStep(
       sandbox,
       'Verifying installed binaries',
-      'command -v agent-browser && agent-browser --version; command -v screen-relay && screen-relay --version || true; command -v fx && fx --version || true',
+      'command -v agent-browser && agent-browser --version; command -v screen-relay && screen-relay --version || true; command -v agent-desktop && agent-desktop --version || true; export PATH="$HOME/.local/bin:$PATH"; command -v fx && fx --version || true',
       { allowFailure: true },
     );
 
@@ -193,6 +212,8 @@ async function main(): Promise<void> {
   } catch (error) {
     await sandbox.stop().catch(() => undefined);
     throw error;
+  } finally {
+    await sandbox.delete().catch(() => undefined);
   }
 }
 
