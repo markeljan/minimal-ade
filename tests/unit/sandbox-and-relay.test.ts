@@ -13,6 +13,7 @@ import {
   deleteFile,
   execCommand,
   getAllFilesRecord,
+  hasVercelSandboxCredentials,
   listFiles,
   normalizeWorkspacePath,
   readFile,
@@ -21,7 +22,16 @@ import {
   writeFile,
 } from '@/lib/sandbox/manager';
 
-const ENV_KEYS = ['SCREEN_RELAY_URL', 'SCREEN_RELAY_TOKEN', 'VERCEL', 'DATABASE_URL'] as const;
+const ENV_KEYS = [
+  'SCREEN_RELAY_URL',
+  'SCREEN_RELAY_TOKEN',
+  'VERCEL',
+  'VERCEL_OIDC_TOKEN',
+  'VERCEL_TOKEN',
+  'VERCEL_TEAM_ID',
+  'VERCEL_PROJECT_ID',
+  'DATABASE_URL',
+] as const;
 type EnvKey = (typeof ENV_KEYS)[number];
 
 const originalFetch = globalThis.fetch;
@@ -319,5 +329,17 @@ describe('dual-tier sandbox, SSRF protection, and screen-relay grant security', 
 
     const afterDeleteAll = await listFiles(chatId, 'just-bash');
     expect(afterDeleteAll).toEqual([]);
+  });
+
+  it('detects Vercel Fluid Compute OIDC runtime (VERCEL=1) for Cloud Sandbox credentials', () => {
+    delete process.env.VERCEL;
+    delete process.env.VERCEL_OIDC_TOKEN;
+    delete process.env.VERCEL_TOKEN;
+    delete process.env.VERCEL_TEAM_ID;
+    delete process.env.VERCEL_PROJECT_ID;
+    expect(hasVercelSandboxCredentials()).toBe(false);
+
+    process.env.VERCEL = '1';
+    expect(hasVercelSandboxCredentials()).toBe(true);
   });
 });

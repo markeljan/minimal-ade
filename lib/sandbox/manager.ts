@@ -513,7 +513,7 @@ export function inferLanguageFromPath(filePath: string): string {
 }
 
 export function hasVercelSandboxCredentials(): boolean {
-  if (process.env.VERCEL_OIDC_TOKEN) {
+  if (process.env.VERCEL_OIDC_TOKEN || process.env.VERCEL === '1') {
     return true;
   }
   if (process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID) {

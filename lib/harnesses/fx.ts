@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import os from 'node:os';
 import path from 'node:path';
+import { getVercelOidcToken } from '@vercel/functions/oidc';
 import { type ToolSet, tool } from 'ai';
 import { local as durableLocal } from 'libfx/durable-local';
 import { vercel as durableVercel } from 'libfx/durable-vercel';
@@ -492,11 +493,10 @@ export function getFxAgent(): FxAgent {
 export function getFxWakeHandler(): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
     const agent = getFxAgent();
+    const oidcToken =
+      process.env.VERCEL_OIDC_TOKEN?.trim() || (await getVercelOidcToken().catch(() => undefined));
     const wakeLease: TurnCredentialLease = {
-      apiKey:
-        process.env.AI_GATEWAY_API_KEY?.trim() ||
-        process.env.VERCEL_OIDC_TOKEN?.trim() ||
-        undefined,
+      apiKey: process.env.AI_GATEWAY_API_KEY?.trim() || oidcToken || undefined,
       headers: {},
       steps: 0,
     };
